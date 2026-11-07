@@ -139,7 +139,9 @@ def test_disabled_video_analysis_never_probes_or_calls_provider(monkeypatch, tmp
 
 
 def test_gemini_scene_frames_avoid_local_vision_pull_and_keep_local_embeddings(monkeypatch, tmp_path):
-    client = Client({"description": "A frightened astronaut watches the red cockpit."})
+    client = Client({"descriptions": [
+        {"index": 1, "description": "A frightened astronaut watches the red cockpit."},
+        {"index": 0, "description": "A frightened astronaut watches the red cockpit."}]})
     use_client(monkeypatch, client)
     image = Image.new("RGB", (1280, 720), (180, 30, 50))
     monkeypatch.setattr("movie_pipeline.shots.shot_frame", lambda *_: image)
@@ -153,6 +155,8 @@ def test_gemini_scene_frames_avoid_local_vision_pull_and_keep_local_embeddings(m
     assert pulled == [scenes.EMBED_MODEL]
     assert data["embedding_provider"] == "ollama"
     assert data["embedding_dimensions"] == 3
+    assert len(client.calls) == 1
+    assert len(client.calls[0][2]["images"]) == 2
     supplied = client.calls[0][2]["images"][0]
     assert supplied.size == (448, 252)
     assert supplied.getpixel((0, 0)) == image.getpixel((0, 0))
@@ -282,3 +286,138 @@ def test_dead_local_vision_pull_is_attempted_once_while_gemini_stays_optional(mo
             scenes._describe(image)
     assert pulls == [scenes.VISION_MODEL]
     assert len(client.calls) == 2
+
+
+def prepare_batch_scenes(monkeypatch, tmp_path, client, count=3):
+    use_client(monkeypatch, client)
+    source = source_file(tmp_path)
+    shots = [{"start": index*4, "end": index*4+4} for index in range(count)]
+    monkeypatch.setattr("movie_pipeline.shots.shot_frame",
+                        lambda source, shots, index: Image.new("RGB", (128, 72), (index*30, 0, 0)))
+    monkeypatch.setattr(scenes, "_pull", lambda *_: None)
+    monkeypatch.setattr(scenes, "embed", lambda texts: np.ones((len(texts), 2), dtype=np.float32))
+    return source, shots
+
+
+def test_batch_scene_captions_match_indexes_not_response_order(monkeypatch, tmp_path):
+    client = Client({"descriptions": [{"index": 2, "description": "A blue-lit doorway."},
+                                       {"index": 0, "description": "A quiet room."},
+                                       {"index": 1, "description": "A running figure."}]})
+    source, shots = prepare_batch_scenes(monkeypatch, tmp_path, client)
+    monkeypatch.setattr(scenes, "_describe_local", lambda image: pytest.fail("valid caption fell back"))
+    data = scenes.describe_trailer(source, shots)
+    assert data["descriptions"] == ["A quiet room.", "A running figure.", "A blue-lit doorway."]
+    assert len(client.calls) == 1 and len(client.calls[0][2]["images"]) == 3
+
+
+def test_batch_scene_duplicate_and_invalid_indexes_fall_back_only_when_needed(monkeypatch, tmp_path):
+    client = Client({"descriptions": [
+        {"index": 0, "description": "Duplicate must be rejected."},
+        {"index": 0, "description": None},
+        {"index": True, "description": "Boolean must not address frame one."},
+        {"index": 1.0, "description": "Float must not address frame one."},
+        {"index": "1", "description": "String must not address frame one."},
+        {"index": 7, "description": "Outside submitted frames."},
+        {"index": 2, "description": "A real doorway."}]})
+    source, shots = prepare_batch_scenes(monkeypatch, tmp_path, client)
+    local = []
+    def local_caption(image):
+        local.append(image.getpixel((0, 0))[0])
+        return "Local frame description."
+    monkeypatch.setattr(scenes, "_describe_local", local_caption)
+    data = scenes.describe_trailer(source, shots)
+    assert local == [0, 30]
+    assert data["descriptions"] == ["Local frame description.", "Local frame description.", "A real doorway."]
+    assert data["backends"] == ["gemini", "ollama"]
+    assert len(client.calls) == 1
+
+
+def test_batch_scene_failure_never_retries_gemini_per_frame(monkeypatch, tmp_path):
+    client = Client(error=gemini.GeminiUnavailable("quota exhausted"))
+    source, shots = prepare_batch_scenes(monkeypatch, tmp_path, client, 6)
+    calls = []
+    monkeypatch.setattr(scenes, "_describe_local", lambda image: calls.append(image) or "Local frame.")
+    data = scenes.describe_trailer(source, shots)
+    assert len(client.calls) == 1 and len(calls) == 6
+    assert data["descriptions"] == ["Local frame."]*6
+    assert data["backends"] == ["ollama"]
+
+
+def test_batch_scene_partial_caption_survives_failed_local_fallback(monkeypatch, tmp_path):
+    client = Client({"descriptions": [{"index": 1, "description": "A visible figure."}]})
+    source, shots = prepare_batch_scenes(monkeypatch, tmp_path, client)
+    def unavailable(image):
+        raise ValueError("local unavailable")
+    monkeypatch.setattr(scenes, "_describe_local", unavailable)
+    data = scenes.describe_trailer(source, shots)
+    assert data["descriptions"] == ["", "A visible figure.", ""]
+    assert data["described"] == [1] and data["backends"] == ["gemini"]
+    assert len(client.calls) == 1
+
+
+def test_batch_scene_indexes_compact_after_frame_extraction_failure(monkeypatch, tmp_path):
+    from movie_pipeline.core import PipelineError
+    client = Client({"descriptions": [{"index": 1, "description": "The last actual frame."},
+                                       {"index": 0, "description": "The first actual frame."}]})
+    source, shots = prepare_batch_scenes(monkeypatch, tmp_path, client)
+    def frame(source, shots, index):
+        if index == 1:
+            raise PipelineError("missing frame")
+        return Image.new("RGB", (128, 72), (index*30, 0, 0))
+    monkeypatch.setattr("movie_pipeline.shots.shot_frame", frame)
+    data = scenes.describe_trailer(source, shots)
+    assert data["descriptions"] == ["The first actual frame.", "", "The last actual frame."]
+    assert len(client.calls) == 1 and len(client.calls[0][2]["images"]) == 2
+
+
+def test_scene_descriptions_disabled_prevents_all_cloud_analysis(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCENE_DESCRIPTIONS", "false")
+    use_client(monkeypatch, Client())
+    monkeypatch.setattr(gemini, "get_client", lambda: pytest.fail("disabled scene stage invoked Gemini"))
+    monkeypatch.setattr("movie_pipeline.shots.shot_frame", lambda *_: pytest.fail("disabled stage decoded a frame"))
+    assert scenes.describe_trailer(tmp_path / "source.mp4", [{"start": 0, "end": 4}]) is None
+
+
+def thumbnail_rating(index, score=8, logo=False, **kwargs):
+    return {"index": index, "large_face": True, "emotion_intensity": 7,
+            "action_or_spectacle": 6, "genre_fit": 8,
+            "logo_or_text": logo, "thumbnail_score": score, **kwargs}
+
+
+def test_thumbnail_batch_keeps_per_image_results_and_logo_rejection(monkeypatch):
+    from movie_pipeline import thumbnail_studio as studio
+    client = Client({"ratings": [thumbnail_rating(1, 9), thumbnail_rating(0, 9, logo=True)]})
+    use_client(monkeypatch, client)
+    monkeypatch.setattr(scenes, "_rate_thumbnail_local", lambda *args: pytest.fail("valid rating fell back"))
+    images = [Image.new("RGB", (1024, 576), (30, 40, 50)), Image.new("RGB", (1024, 576), (80, 90, 100))]
+    candidates = [studio.Candidate(image, 0, str(index), score=5-index) for index, image in enumerate(images)]
+    assert studio.rate_with_vision(candidates) == 2
+    assert candidates[0].notes["logo"] is True and candidates[1].notes["logo"] is False
+    assert candidates[0].score < candidates[1].score
+    assert len(client.calls) == 1 and len(client.calls[0][2]["images"]) == 2
+    assert client.calls[0][2]["images"][0].getpixel((0, 0)) == images[0].getpixel((0, 0))
+
+
+def test_thumbnail_batch_invalid_rows_only_use_local_fallback(monkeypatch):
+    client = Client({"ratings": [thumbnail_rating(0, 3), thumbnail_rating(0, 7),
+                                  thumbnail_rating(1, logo="false"), thumbnail_rating(2, 9)]})
+    use_client(monkeypatch, client)
+    local = []
+    def fallback(image, genre, genre_hint):
+        local.append(image.getpixel((0, 0))[0])
+        return {"large_face": False, "emotion": 1, "action": 2, "genre_fit": 3, "logo": False, "score": 4}
+    monkeypatch.setattr(scenes, "_rate_thumbnail_local", fallback)
+    images = [Image.new("RGB", (80, 45), (index*30, 0, 0)) for index in range(3)]
+    result = scenes.rate_thumbnails(images)
+    assert local == [0, 30]
+    assert [row["score"] for row in result] == [4, 4, 9]
+    assert len(client.calls) == 1
+
+
+def test_thumbnail_batch_quota_failure_has_no_individual_cloud_retries(monkeypatch):
+    client = Client(error=gemini.GeminiUnavailable("quota exhausted"))
+    use_client(monkeypatch, client)
+    local = []
+    monkeypatch.setattr(scenes, "_rate_thumbnail_local", lambda *args: local.append(args[0]) or None)
+    assert scenes.rate_thumbnails([Image.new("RGB", (80, 45)) for _ in range(6)]) == [None]*6
+    assert len(client.calls) == 1 and len(local) == 6
