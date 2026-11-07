@@ -227,6 +227,58 @@ _PUBLIC_SCHEMA = {**_SCHEMA, "properties": {
     "required": [*_SCHEMA["required"], "source_index", "year_evidence"]}
 
 
+
+def _work_definition(source: dict, kind: str) -> bool:
+    """The actual opening definition must classify a work, not mention one."""
+    text = source.get("text", "")
+    if not isinstance(text, str):
+        return False
+    # Paragraph/heading boundaries preserve titles and abbreviations such as
+    # "Mr. Robot" and "U.S."; splitting at every period would damage them.
+    lead = re.split(r"\n\s*\n|^==", text, maxsplit=1, flags=re.M)[0][:1800]
+    # Protect common abbreviations before isolating the opening definition.
+    # Sentence boundaries are structural checks only; evidence remains the
+    # untouched source text used by _quote below.
+    lead = re.sub(r"\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|Prof|No|vs)\.",
+                  lambda match: match[0].replace(".", " "), lead, flags=re.I)
+    lead = re.sub(r"\b(?:[A-Za-z]\.){2,}", lambda match: match[0].replace(".", " "), lead)
+    lead = re.split(r"[.!?](?=\s+[A-Z]|\s*$)", lead, maxsplit=1)[0]
+    stripped = lead
+    for _ in range(4):
+        stripped = re.sub(r"\([^()]*\)", " ", stripped)
+    stripped = re.sub(r",\s*(?:also known as|alternatively titled|originally titled)\s+[^,]+,\s*",
+                      " ", stripped, flags=re.I)
+    aliases = source.get("aliases", [])
+    names = {title_key(source.get("title", "")),
+             *[title_key(name) for name in aliases if isinstance(name, str)]}
+    if kind == "movie":
+        medium = r"\b(?:film|movie)\b(?!\s+series\b)"
+    else:
+        medium = r"\b(?:miniseries|television series|tv series|television show|tv show|web series|series)\b(?!\s+of\b)"
+    other_subject = re.compile(
+        r"\b(?:fictional|character|novel|song|album|band|franchise|"
+        r"concept|term|topic|article|organisation|organization|company|device|weapon|vehicle|"
+        r"actor|actress|wrestler|stage name|working title|published|appears|appeared|appearing|adapted)\b")
+    for variant in (lead, stripped):
+        plain = normalized(variant)
+        for name in sorted(names, key=len, reverse=True):
+            if not name:
+                continue
+            defined = re.match(r"^" + re.escape(name) + r"\s+(?:is|was|are|were)\s+(.+)", plain)
+            if not defined:
+                continue
+            predicate = defined[1][:220]
+            match = re.search(medium, predicate)
+            if not match:
+                continue
+            before = predicate[:match.start()]
+            # A topic's later appearance in a film does not change the subject
+            # established by "is a fictional character/concept/novel/...".
+            if len(before.split()) <= 24 and not other_subject.search(before):
+                return True
+    return False
+
+
 def _public_identity(item: FilmInput, kind: str, data: dict, source: dict, evidence: list[dict]) -> tuple[str, str]:
     """Check real page identity and quotes, without requiring synthetic prose."""
     if (not isinstance(data, dict) or normalized(str(data.get("title", ""))) != normalized(item.title)
@@ -237,6 +289,8 @@ def _public_identity(item: FilmInput, kind: str, data: dict, source: dict, evide
              *[title_key(name) for name in aliases if isinstance(name, str)]}
     if title_key(item.title) not in names:
         raise GeminiUnavailable("public_source_title_mismatch")
+    if not _work_definition(source, kind):
+        raise GeminiUnavailable("public_source_medium_not_a_film_or_television_work")
     identity = _quote(data.get("identity_evidence"), evidence)
     plain = normalized(identity)
     medium = (r"\b(?:film|movie)\b" if kind == "movie" else

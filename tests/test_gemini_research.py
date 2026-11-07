@@ -416,3 +416,43 @@ def test_aliens_film_cannot_be_accepted_as_a_television_series(public_provider, 
         title="Aliens", year=1986, kind="tv", identity_evidence=lead, year_evidence=lead)
     with pytest.raises(GeminiUnavailable, match="medium"):
         gemini_research.research_film(FilmInput("Aliens", 1986), "tv")
+
+
+
+@pytest.mark.parametrize("lead,incidental", [
+    ("War Machine is a fictional character appearing in American comic books published by Marvel Comics.",
+     "War Machine appears in the 2026 film Avengers: Doomsday."),
+    ("War Machine is a military concept describing the machinery and organization used in warfare.",
+     "War Machine is discussed in a 2026 documentary film."),
+    ("War Machine is the stage name of an American professional wrestler.",
+     "War Machine appeared in a 2026 film production.")])
+def test_canonical_topic_with_incidental_films_is_not_a_movie(public_provider, monkeypatch, lead, incidental):
+    page = public_page("War Machine", lead)
+    page["text"] += "\n\n" + incidental
+    monkeypatch.setattr(gemini_research, "collect_public_sources", Mock(return_value=[page]))
+    public_provider.generate_json.return_value.update(
+        title="War Machine", year=2026, kind="movie", identity_evidence=incidental, year_evidence=incidental)
+    with pytest.raises(GeminiUnavailable, match="not_a_film_or_television_work"):
+        gemini_research.research_film(FilmInput("War Machine", 2026), "movie")
+
+
+@pytest.mark.parametrize("title,page_title,kind,lead", [
+    ("War Machine", "War Machine (2026 film)", "movie",
+     "War Machine is a 2026 U.S. military science fiction action film starring Alan Ritchson."),
+    ("Mr. Robot", "Mr. Robot", "tv",
+     "Mr. Robot is an American drama thriller television series created by Sam Esmail. It premiered in 2015."),
+    ("Lioness", "Lioness (American TV series)", "tv",
+     "Lioness (also known as Special Ops: Lioness) is an American spy thriller television series. It premiered in 2023."),
+    ("Birdman or (The Unexpected Virtue of Ignorance)", "Birdman or (The Unexpected Virtue of Ignorance)", "movie",
+     "Birdman or (The Unexpected Virtue of Ignorance) is a 2014 American black comedy drama film.")])
+def test_work_opening_definition_handles_aliases_and_abbreviations(title, page_title, kind, lead):
+    page = public_page(page_title, lead)
+    assert gemini_research._work_definition(page, kind)
+
+
+
+def test_superhero_and_comic_book_are_allowed_as_actual_film_genres():
+    lead = "Iron Man is a 2008 American superhero film based on the Marvel Comics character of the same name."
+    assert gemini_research._work_definition(public_page("Iron Man (2008 film)", lead), "movie")
+    lead = "Example is a 2026 American comic book film directed by an independent filmmaker."
+    assert gemini_research._work_definition(public_page("Example (2026 film)", lead), "movie")
