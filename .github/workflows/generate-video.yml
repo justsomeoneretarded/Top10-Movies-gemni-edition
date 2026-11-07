@@ -4,6 +4,14 @@ run-name: "Video — ${{ inputs.title }}"
 on:
   workflow_dispatch:
     inputs:
+      ai_backend:
+        description: "AI backend for this comparison run"
+        required: true
+        type: choice
+        default: Gemini with local fallback
+        options:
+          - Gemini with local fallback
+          - Local
       title:
         description: "Video title / topic (ranking follows your list, best first)"
         required: true
@@ -87,6 +95,9 @@ on:
 
   workflow_call:
     inputs:
+      ai_backend:
+        type: string
+        default: Gemini with local fallback
       title:
         required: true
         type: string
@@ -137,6 +148,25 @@ jobs:
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
+      AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
+      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Provider enforces its free-only allowlist even if a variable is changed.
+      GEMINI_FREE_ONLY: 'true'
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
+      GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
+      GEMINI_USAGE_REPORT: work/gemini-usage-prepare.jsonl
+      GEMINI_PREFLIGHT_REPORT: work/gemini-preflight-prepare.json
       TTS_MODEL: ${{ inputs.tts_model || 'original' }}
       SCRIPT_MODEL: gemma4:12b
       TRY_4K: "${{ inputs.try_4k }}"
@@ -163,17 +193,33 @@ jobs:
           python -m pip install --upgrade pip
           bash scripts/run_logged.sh "Dependency install" python -m pip install -e .
           bash scripts/run_logged.sh "Input check" python -m scripts.preflight
+      - name: Validate Gemini authentication and configured capabilities
+        run: python -m scripts.gemini_preflight
       - name: Research the episode
         id: plan
         # Research only (a few minutes), so footage and music start right away; planning has its own job.
         run: bash scripts/run_logged.sh "Research" python -m movie_pipeline.cli --stage prepare
       - name: Package research
-        run: tar -czf warm-prepare.tgz work/jobs
+        run: |
+          mkdir -p work
+          touch "$GEMINI_USAGE_REPORT"
+          tar -czf warm-prepare.tgz work/jobs "$GEMINI_USAGE_REPORT" "$GEMINI_PREFLIGHT_REPORT"
       - uses: actions/upload-artifact@v4
         with:
           name: warm-prepare
           path: warm-prepare.tgz
           retention-days: 1
+      - name: Bounded Gemini usage and capability diagnostics
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-usage-prepare
+          path: |
+            work/gemini-usage-*.jsonl
+            work/gemini-preflight-*.json
+          if-no-files-found: ignore
+          retention-days: 2
+
 
   plan:
     # The episode plan (promise, hooks, anchors) that every script section follows.
@@ -187,6 +233,25 @@ jobs:
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
+      AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
+      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Provider enforces its free-only allowlist even if a variable is changed.
+      GEMINI_FREE_ONLY: 'true'
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
+      GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
+      GEMINI_USAGE_REPORT: work/gemini-usage-plan.jsonl
+      GEMINI_PREFLIGHT_REPORT: work/gemini-preflight-plan.json
       TTS_MODEL: ${{ inputs.tts_model || 'original' }}
       SCRIPT_MODEL: gemma4:12b
       TRY_4K: "${{ inputs.try_4k }}"
@@ -214,6 +279,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           bash scripts/run_logged.sh "Dependency install" python -m pip install -e .
+      - name: Validate Gemini authentication and configured capabilities
+        run: python -m scripts.gemini_preflight
       - uses: actions/download-artifact@v4
         with:
           name: warm-prepare
@@ -228,12 +295,24 @@ jobs:
           shopt -s nullglob
           dirs=(work/jobs/*/script-sections)
           if [ ${#dirs[@]} -eq 0 ]; then mkdir -p work/jobs/no-plan/script-sections; dirs=(work/jobs/no-plan/script-sections); fi
-          tar -czf warm-plan.tgz "${dirs[@]}"
+          touch "$GEMINI_USAGE_REPORT"
+          tar -czf warm-plan.tgz "${dirs[@]}" "$GEMINI_USAGE_REPORT" "$GEMINI_PREFLIGHT_REPORT"
       - uses: actions/upload-artifact@v4
         with:
           name: warm-plan
           path: warm-plan.tgz
           retention-days: 1
+      - name: Bounded Gemini usage and capability diagnostics
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-usage-plan
+          path: |
+            work/gemini-usage-*.jsonl
+            work/gemini-preflight-*.json
+          if-no-files-found: ignore
+          retention-days: 2
+
 
   music:
     # An original instrumental score in the video's genre (ACE-Step 1.5, MIT). Optional: any
@@ -308,6 +387,25 @@ jobs:
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
+      AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
+      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Provider enforces its free-only allowlist even if a variable is changed.
+      GEMINI_FREE_ONLY: 'true'
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
+      GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
+      GEMINI_USAGE_REPORT: work/gemini-usage-script-${{ matrix.part }}.jsonl
+      GEMINI_PREFLIGHT_REPORT: work/gemini-preflight-script-${{ matrix.part }}.json
       TTS_MODEL: ${{ inputs.tts_model || 'original' }}
       SCRIPT_MODEL: gemma4:12b
       TRY_4K: "${{ inputs.try_4k }}"
@@ -341,6 +439,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           bash scripts/run_logged.sh "Dependency install" python -m pip install -e .
+      - name: Validate Gemini authentication and configured capabilities
+        run: python -m scripts.gemini_preflight
       - name: Restore voice model cache
         if: env.VOICE_WARM == 'true'
         uses: actions/cache/restore@v4
@@ -371,12 +471,25 @@ jobs:
       - name: Write and fact-check one section
         run: bash scripts/run_logged.sh "Script section" python -m movie_pipeline.cli --stage script
       - name: Package the section
-        run: tar -czf "warm-script-$PIPELINE_PART.tgz" work/jobs/*/script-sections $(ls -d work/jobs/*/speech 2>/dev/null)
+        run: |
+          touch "$GEMINI_USAGE_REPORT"
+          tar -czf "warm-script-$PIPELINE_PART.tgz" work/jobs/*/script-sections $(ls -d work/jobs/*/speech 2>/dev/null) "$GEMINI_USAGE_REPORT" "$GEMINI_PREFLIGHT_REPORT"
       - uses: actions/upload-artifact@v4
         with:
           name: warm-script-${{ matrix.part }}
           path: warm-script-*.tgz
           retention-days: 1
+      - name: Bounded Gemini usage and capability diagnostics
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-usage-script-${{ matrix.part }}
+          path: |
+            work/gemini-usage-*.jsonl
+            work/gemini-preflight-*.json
+          if-no-files-found: ignore
+          retention-days: 2
+
 
   footage:
     needs: prepare
@@ -395,6 +508,25 @@ jobs:
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
+      AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
+      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Provider enforces its free-only allowlist even if a variable is changed.
+      GEMINI_FREE_ONLY: 'true'
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
+      GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
+      GEMINI_USAGE_REPORT: work/gemini-usage-footage-${{ matrix.part }}.jsonl
+      GEMINI_PREFLIGHT_REPORT: work/gemini-preflight-footage-${{ matrix.part }}.json
       TTS_MODEL: ${{ inputs.tts_model || 'original' }}
       SCRIPT_MODEL: gemma4:12b
       TRY_4K: "${{ inputs.try_4k }}"
@@ -429,6 +561,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           bash scripts/run_logged.sh "Dependency install" python -m pip install -e .
+      - name: Validate Gemini authentication and configured capabilities
+        run: python -m scripts.gemini_preflight
       - uses: actions/download-artifact@v4
         with:
           name: warm-prepare
@@ -457,7 +591,9 @@ jobs:
       - name: Download and analyse one title's trailer
         run: bash scripts/run_logged.sh "Footage" python -m movie_pipeline.cli --stage footage
       - name: Package the footage
-        run: tar -czf "warm-footage-$PIPELINE_PART.tgz" work/footage
+        run: |
+          touch "$GEMINI_USAGE_REPORT"
+          tar -czf "warm-footage-$PIPELINE_PART.tgz" work/footage "$GEMINI_USAGE_REPORT" "$GEMINI_PREFLIGHT_REPORT"
       - uses: actions/upload-artifact@v4
         with:
           name: warm-footage-${{ matrix.part }}
@@ -466,6 +602,17 @@ jobs:
       - name: Remove temporary YouTube cookies
         if: always()
         run: rm -f "$RUNNER_TEMP/youtube-cookies.txt"
+      - name: Bounded Gemini usage and capability diagnostics
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-usage-footage-${{ matrix.part }}
+          path: |
+            work/gemini-usage-*.jsonl
+            work/gemini-preflight-*.json
+          if-no-files-found: ignore
+          retention-days: 2
+
 
   produce:
     needs: [prepare, plan, script, footage, music]
@@ -480,6 +627,25 @@ jobs:
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
+      AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
+      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Provider enforces its free-only allowlist even if a variable is changed.
+      GEMINI_FREE_ONLY: 'true'
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
+      GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
+      GEMINI_USAGE_REPORT: work/gemini-usage-produce.jsonl
+      GEMINI_PREFLIGHT_REPORT: work/gemini-preflight-produce.json
       # The per-run selection is shared with every warm-up; repository variables cannot change it.
       TTS_MODEL: ${{ inputs.tts_model || 'original' }}
       SCRIPT_MODEL: gemma4:12b
@@ -535,6 +701,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m scripts.preflight
+      - name: Validate Gemini authentication and configured capabilities
+        run: python -m scripts.gemini_preflight
       - name: Restore shot analyses from earlier runs
         uses: actions/cache/restore@v4
         continue-on-error: true
@@ -615,6 +783,16 @@ jobs:
           name: movie-video-${{ github.run_number }}
           path: output/
           if-no-files-found: error
+          retention-days: 2
+      - name: Bounded Gemini usage and capability diagnostics
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-usage-produce
+          path: |
+            work/gemini-usage-*.jsonl
+            work/gemini-preflight-*.json
+          if-no-files-found: ignore
           retention-days: 2
       - name: Bounded audio inspection samples
         if: always() && !cancelled()
