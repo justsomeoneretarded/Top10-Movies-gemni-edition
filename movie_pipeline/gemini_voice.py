@@ -105,7 +105,7 @@ def _wav_info(data: bytes) -> tuple[int, int, int, int]:
                     or width not in (2, 3) or not 8000 <= rate <= 48000
                     or frames <= 0):
                 raise ValueError("Unsupported WAV channel, sample or encoding metadata.")
-            if len(audio.readframes(frames)) != frames * channels * width:
+            if len(audio.readframes(frames + 1)) != frames * channels * width:
                 raise ValueError("Truncated PCM frames.")
     except (wave.Error, EOFError) as exc:
         raise ValueError("Invalid PCM WAV audio.") from exc

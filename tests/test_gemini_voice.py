@@ -314,3 +314,10 @@ def test_real_ffmpeg_output_is_decodable_on_supported_python_311(setup_voice, mo
     monkeypatch.setattr(voice, "ffmpeg", ffmpeg)
     output = setup_voice.build().speak("A complete narrated sentence.")
     assert voice._wav_info(output.read_bytes())[:3] == (48000, 1, 2)
+
+
+@pytest.mark.parametrize("width", [2, 3])
+def test_wav_rejects_a_trailing_partial_pcm_frame(width):
+    malformed = wav_bytes(width=width, frames=b"\x01" * (24000 * width + 1))
+    with pytest.raises(ValueError, match="Truncated PCM"):
+        voice.audio_wav(malformed, "audio/wav")
