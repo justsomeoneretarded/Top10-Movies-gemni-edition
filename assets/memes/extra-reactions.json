@@ -1,0 +1,62 @@
+[
+  {
+    "asset": "homer-disappear-bush.gif.b64",
+    "sha256": "ed887a3c2bed3725b1a9aaedeb15a77651d2f617864c83f24e0b66701a277b10",
+    "source": "https://github.com/tlberglund/animated-gifs/blob/3cd940af8cd795393388f117f4e8c091cde72d0c/homer-disappear-bush.gif",
+    "attribution": "Reaction GIF: homer-disappear-bush.gif; source: tlberglund/animated-gifs.",
+    "width": 267,
+    "height": 199,
+    "frames": 41,
+    "bytes": 319775
+  },
+  {
+    "asset": "picard-facepalm.gif.b64",
+    "sha256": "bfcd6b92270aefe4b2dc1da73cfb906e694c7287eeaa7e928001e251d4b17ced",
+    "source": "https://github.com/tlberglund/animated-gifs/blob/3cd940af8cd795393388f117f4e8c091cde72d0c/picard-facepalm.gif",
+    "attribution": "Reaction GIF: picard-facepalm.gif; source: tlberglund/animated-gifs.",
+    "width": 305,
+    "height": 250,
+    "frames": 31,
+    "bytes": 720601
+  },
+  {
+    "asset": "keanu-thumbs-up.gif.b64",
+    "sha256": "bd23342fab2f739389a593cc98756951ba434fdf5a618644dbc4cdbea43ce286",
+    "source": "https://github.com/tlberglund/animated-gifs/blob/3cd940af8cd795393388f117f4e8c091cde72d0c/keanu-thumbs-up.gif",
+    "attribution": "Reaction GIF: keanu-thumbs-up.gif; source: tlberglund/animated-gifs.",
+    "width": 366,
+    "height": 229,
+    "frames": 21,
+    "bytes": 994572
+  },
+  {
+    "asset": "dramatic-pug.gif.b64",
+    "sha256": "41262d5ccd27b09d96bf5d21fbad147a4d1f720b25cbef3f5f4e91bf677ec53d",
+    "source": "https://github.com/tlberglund/animated-gifs/blob/3cd940af8cd795393388f117f4e8c091cde72d0c/dramatic-pug.gif",
+    "attribution": "Reaction GIF: dramatic-pug.gif; source: tlberglund/animated-gifs.",
+    "width": 216,
+    "height": 288,
+    "frames": 30,
+    "bytes": 926406
+  },
+  {
+    "asset": "mic-drop-bryan-cranston.gif.b64",
+    "sha256": "7e3cb8aa5f92b7667f85b92a9b7540857cc16379a5b4b65227f1cd523aa8b872",
+    "source": "https://github.com/tlberglund/animated-gifs/blob/3cd940af8cd795393388f117f4e8c091cde72d0c/mic-drop-bryan-cranston.gif",
+    "attribution": "Reaction GIF: mic-drop-bryan-cranston.gif; source: tlberglund/animated-gifs.",
+    "width": 500,
+    "height": 283,
+    "frames": 19,
+    "bytes": 928678
+  },
+  {
+    "asset": "dancing-carlton.gif.b64",
+    "sha256": "c00fc935d41c6bbdfe312a6aa333660f920f8812fc5b733bf1758909a2015b41",
+    "source": "https://github.com/tlberglund/animated-gifs/blob/3cd940af8cd795393388f117f4e8c091cde72d0c/dancing-carlton.gif",
+    "attribution": "Reaction GIF: dancing-carlton.gif; source: tlberglund/animated-gifs.",
+    "width": 350,
+    "height": 497,
+    "frames": 24,
+    "bytes": 705429
+  }
+]

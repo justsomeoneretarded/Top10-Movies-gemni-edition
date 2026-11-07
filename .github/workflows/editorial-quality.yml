@@ -1,0 +1,43 @@
+name: Editorial Quality Review
+on:
+  push:
+    branches: [quality/movie-ranks-upgrade]
+concurrency:
+  group: editorial-quality-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      SCENE_DESCRIPTIONS: 'false'
+      VIDEO_RESOLUTION: 1280x720
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: bash scripts/install_system_packages.sh ffmpeg fonts-dejavu-core tesseract-ocr
+      - run: python -m pip install -e '.[test]'
+      - name: Compile and exercise editorial safeguards
+        run: |
+          python -m compileall -q movie_pipeline scripts
+          pytest -q tests/test_movie_ranks_upgrade.py tests/test_script.py tests/test_secondary_footage.py tests/test_source_pool.py tests/test_production.py tests/test_packaging.py tests/test_story.py tests/test_warm_stages.py tests/test_thumbnail_studio.py
+      - name: Validate workflow syntax with actionlint
+        run: |
+          curl -fLsS --retry 2 https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tgz"
+          tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
+      - name: Render real-photo contact sheet and brand sample
+        if: ${{ !cancelled() }}
+        run: python -m scripts.quality_preview
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: editorial-quality-preview
+          path: quality-preview/
+          retention-days: 2

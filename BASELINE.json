@@ -1,0 +1,712 @@
+{
+  "schema_version": 1,
+  "source_repository": "justsomeoneretarded/Top10-Movies",
+  "source_commit": "5daddc9c891dc39664e47084405223daccb53673",
+  "historical_code_commit": "c6f82a621b9de57a2c180a74cd9e37e17f2a6a92",
+  "source_tree": "468698be6760e08714b840e04544c37e45704a47",
+  "files": {
+    ".github/workflows/benchmark-models.yml": {
+      "sha": "e979a45a38088108609178539dddfa0e093315cf",
+      "mode": "100644"
+    },
+    ".github/workflows/ci.yml": {
+      "sha": "abac35be4284f47fbce259331b307663b57f93e9",
+      "mode": "100644"
+    },
+    ".github/workflows/cleanup-production-caches.yml": {
+      "sha": "d2c099a975aac1f86caa7c40b7381dfbe41a2e3f",
+      "mode": "100644"
+    },
+    ".github/workflows/editorial-quality.yml": {
+      "sha": "1ace92e7d3cc5ef5cd4e9949095b873e2470016a",
+      "mode": "100644"
+    },
+    ".github/workflows/generate-video.yml": {
+      "sha": "28ddce4a15ada40ed37c51c2dab21cabd2f5495f",
+      "mode": "100644"
+    },
+    ".github/workflows/intro-preview.yml": {
+      "sha": "9872c305cc7cafdf31fe79bc79da0e2063d202a5",
+      "mode": "100644"
+    },
+    ".github/workflows/natural-narration.yml": {
+      "sha": "f7b919a04e57b605932c55248c56606236af65b3",
+      "mode": "100644"
+    },
+    ".github/workflows/production-request.yml": {
+      "sha": "d32a8b49defdba45eab0e4cb029c08958e2d1904",
+      "mode": "100644"
+    },
+    ".github/workflows/review-export.yml": {
+      "sha": "127170fc1ad3a8947436eb3aca805f713429f747",
+      "mode": "100644"
+    },
+    ".github/workflows/runner-setup.yml": {
+      "sha": "4311ba8b6cda54f1c90fbff3b57c38fbc6054ea1",
+      "mode": "100644"
+    },
+    ".github/workflows/thumbnail-lab.yml": {
+      "sha": "0e2d5776b2c310bbe98c427396d7134d5b5bb8d2",
+      "mode": "100644"
+    },
+    ".gitignore": {
+      "sha": "58a984820ff9f343e539e078354f21e0b1e51cfd",
+      "mode": "100644"
+    },
+    "README.md": {
+      "sha": "64379653b1240f1be001e6c58f18f63926fbc7f4",
+      "mode": "100644"
+    },
+    "VERSION.md": {
+      "sha": "11740ee3086b4b74c0711fb4397ba712d4194581",
+      "mode": "100644"
+    },
+    "assets/fonts/Anton-Regular.ttf": {
+      "sha": "4d65707db9d8663ccfa99cd28cd3a4e0025be178",
+      "mode": "100644"
+    },
+    "assets/fonts/BebasNeue-Regular.ttf": {
+      "sha": "c328c6e08b20a20a1de47d823e007ee73812a438",
+      "mode": "100644"
+    },
+    "assets/fonts/Montserrat-Variable.ttf": {
+      "sha": "c97aca18592834d8706549c279cb8d5ac5d85f69",
+      "mode": "100644"
+    },
+    "assets/fonts/OFL-Anton.txt": {
+      "sha": "93feddee37145696e123ea65a6772cab09663f9e",
+      "mode": "100644"
+    },
+    "assets/fonts/OFL-BebasNeue.txt": {
+      "sha": "da9571488f44176ef90d7f10c0f402c8be74db67",
+      "mode": "100644"
+    },
+    "assets/fonts/OFL-Montserrat.txt": {
+      "sha": "fe576a2ee1f96353b05d030c0b7620d525cc53a8",
+      "mode": "100644"
+    },
+    "assets/fonts/README.md": {
+      "sha": "7f81d4c4e3b45a471519eccdad7702673b0b65f5",
+      "mode": "100644"
+    },
+    "assets/memes/README.md": {
+      "sha": "83c69481b6ce15e03196f5ce8f245d5a82cf1cf1",
+      "mode": "100644"
+    },
+    "assets/memes/crying-thumbs-up-cat.jpg.b64": {
+      "sha": "625dc839bd370a95bb19d92329e61f68a9569406",
+      "mode": "100644"
+    },
+    "assets/memes/dancing-carlton.gif.b64": {
+      "sha": "5f4a530dcb9bd3bbae1de6c9a8ceedc282e9307e",
+      "mode": "100644"
+    },
+    "assets/memes/dramatic-pug.gif.b64": {
+      "sha": "33c65ab5a1c03bfe0377d675834d72584e88df2a",
+      "mode": "100644"
+    },
+    "assets/memes/extra-reactions.json": {
+      "sha": "d519d673d6876a04226924a78e53dd7bfdfb48cf",
+      "mode": "100644"
+    },
+    "assets/memes/homer-disappear-bush.gif.b64": {
+      "sha": "602f3a0eae7327bc507c6303715af208a2fdadf3",
+      "mode": "100644"
+    },
+    "assets/memes/keanu-thumbs-up.gif.b64": {
+      "sha": "f15956201a3bf673ac7b43b282a3a4d8fdd46160",
+      "mode": "100644"
+    },
+    "assets/memes/mic-drop-bryan-cranston.gif.b64": {
+      "sha": "8fba7fc61e521e7be50e0d9ae890fb1abcf6891c",
+      "mode": "100644"
+    },
+    "assets/memes/picard-facepalm.gif.b64": {
+      "sha": "6a3d407febb9d3670c9ab1ebf2db2969138d884c",
+      "mode": "100644"
+    },
+    "assets/memes/self-high-five.gif.b64": {
+      "sha": "f803e31f227bc0b996f0184089a35ed47cb9e97b",
+      "mode": "100644"
+    },
+    "assets/memes/spock-cat.gif.b64": {
+      "sha": "575a02cc3af86a09b775f388bd06876c49a46926",
+      "mode": "100644"
+    },
+    "assets/music/LICENSE.md": {
+      "sha": "7d869a171045e3806d2b8db0b6fe0029741d0b0b",
+      "mode": "100644"
+    },
+    "assets/music/aurora.ogg": {
+      "sha": "055b79a358a9310dad16697013a07b7377e15318",
+      "mode": "100644"
+    },
+    "assets/music/catalog.json": {
+      "sha": "aa3513fe04150582dd94e71be97f40a326e0c0c9",
+      "mode": "100644"
+    },
+    "assets/music/celestial.ogg": {
+      "sha": "8888d2200f70b4d062bdd68bb722f232aa6ce4c8",
+      "mode": "100644"
+    },
+    "assets/music/titan.ogg": {
+      "sha": "d13e92784e43e6b93aa472b7c55fa3c5ef5d011a",
+      "mode": "100644"
+    },
+    "assets/voices/.gitkeep": {
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "mode": "100644"
+    },
+    "assets/voices/female.ogg": {
+      "sha": "6b47d1dd9b3b7c991d558d2828821f0d92a83bd3",
+      "mode": "100644"
+    },
+    "assets/voices/kit-laser.ogg": {
+      "sha": "dbb96beed6cfe6bb555f062051731d7c7187c9f1",
+      "mode": "100644"
+    },
+    "assets/voices/warguy.ogg": {
+      "sha": "5521456fcf105b9a5c6bf569bb2c46b6d8f8c345",
+      "mode": "100644"
+    },
+    "docs/EDITORIAL-QUALITY.md": {
+      "sha": "a35c7a9527c13a9e24749ebe380404c619c2ecff",
+      "mode": "100644"
+    },
+    "docs/RUNNER-SETUP.md": {
+      "sha": "3051d5e9507a2596082066660fc33dd56241edaa",
+      "mode": "100644"
+    },
+    "movie_pipeline/__init__.py": {
+      "sha": "5d8184c7cda0a8d8150d3176c2e81c246cc2b8ef",
+      "mode": "100644"
+    },
+    "movie_pipeline/audio_review.py": {
+      "sha": "cf5b8c4c0b15bd8426b267b06e0db4de5a8cae43",
+      "mode": "100644"
+    },
+    "movie_pipeline/augmentation.py": {
+      "sha": "5fefd43cf7704ea0282ef458e0252d4632b40cec",
+      "mode": "100644"
+    },
+    "movie_pipeline/auth.py": {
+      "sha": "001106b142e70deb22507a59d8014c436d4da7fb",
+      "mode": "100644"
+    },
+    "movie_pipeline/availability.py": {
+      "sha": "3020f6d9c47125a808bbf19f6fa8c09c7a3be6a6",
+      "mode": "100644"
+    },
+    "movie_pipeline/branding.py": {
+      "sha": "17d8c92ae171dc2961f103de8bb9606871bfd38e",
+      "mode": "100644"
+    },
+    "movie_pipeline/cli.py": {
+      "sha": "468b4572e70160d14f4155734f2eb29157210177",
+      "mode": "100644"
+    },
+    "movie_pipeline/core.py": {
+      "sha": "1da3864decbaf2c020647831acaec3e016f66075",
+      "mode": "100644"
+    },
+    "movie_pipeline/cta.py": {
+      "sha": "b913bd38993063f9a5df3cbce5a00334f43636ec",
+      "mode": "100644"
+    },
+    "movie_pipeline/cta_animation.py": {
+      "sha": "24d51ff3ec8baddcc828cf478f24201bfef55b9c",
+      "mode": "100644"
+    },
+    "movie_pipeline/dialogue.py": {
+      "sha": "f4372263441760935e31140b0d6bf10fafa3eeba",
+      "mode": "100644"
+    },
+    "movie_pipeline/download_access.py": {
+      "sha": "d972f5f1bc93aaed269a8aaa57fa849e465417b0",
+      "mode": "100644"
+    },
+    "movie_pipeline/editorial.py": {
+      "sha": "7d69cc7516b1a8b80c0d122cee9b38a196c1d1c4",
+      "mode": "100644"
+    },
+    "movie_pipeline/editorial_policy.py": {
+      "sha": "86801b25758d6ba36772d97faa178ddcac557a57",
+      "mode": "100644"
+    },
+    "movie_pipeline/footage.py": {
+      "sha": "6372f9170fab469edc62a34f245dff68eb67570e",
+      "mode": "100644"
+    },
+    "movie_pipeline/image_discovery.py": {
+      "sha": "cd16a49199f7bdda3434b444a871db4a1895c1a0",
+      "mode": "100644"
+    },
+    "movie_pipeline/memes.py": {
+      "sha": "11823402995b5a8ad6e0175b024a05a4265b1cd1",
+      "mode": "100644"
+    },
+    "movie_pipeline/moments.py": {
+      "sha": "8752d377219ce84ed688192965ca8d9ce18ea555",
+      "mode": "100644"
+    },
+    "movie_pipeline/packaging.py": {
+      "sha": "01b54c8f9ff7b8de967515159818f395bc8c5e78",
+      "mode": "100644"
+    },
+    "movie_pipeline/people.py": {
+      "sha": "170b50e0bd9a50ed9fdf33126f597ce3b25cc874",
+      "mode": "100644"
+    },
+    "movie_pipeline/previews.py": {
+      "sha": "4b191482fd17bfff802b7c690d14057d52d53bca",
+      "mode": "100644"
+    },
+    "movie_pipeline/rank_intro.py": {
+      "sha": "93ea832aa0e084f20aacf83929aa345d89055aed",
+      "mode": "100644"
+    },
+    "movie_pipeline/reaction_library.py": {
+      "sha": "f89dff3211883692265d33c7e160e66d4a3c4300",
+      "mode": "100644"
+    },
+    "movie_pipeline/render.py": {
+      "sha": "6ed3fdf11300b2a758408e3aca8dd0f6e017872e",
+      "mode": "100644"
+    },
+    "movie_pipeline/research.py": {
+      "sha": "25043b77081003868935fe4c05904dea76726d8f",
+      "mode": "100644"
+    },
+    "movie_pipeline/resource_budget.py": {
+      "sha": "38470b71fb14e97c52a77bbfcb8d40ffc2ab706b",
+      "mode": "100644"
+    },
+    "movie_pipeline/review.py": {
+      "sha": "5bd5e45c43251ce778e436a3427e11b326450a7b",
+      "mode": "100644"
+    },
+    "movie_pipeline/scenes.py": {
+      "sha": "92dbfda2fa0cb5a257378b7e42042e7b307d295a",
+      "mode": "100644"
+    },
+    "movie_pipeline/script.py": {
+      "sha": "63f1896b60c89994645bc2684c60c63428942f37",
+      "mode": "100644"
+    },
+    "movie_pipeline/secondary_footage.py": {
+      "sha": "302a754a3a08757cd4e11221082ce4ee9756d664",
+      "mode": "100644"
+    },
+    "movie_pipeline/shots.py": {
+      "sha": "edfe1208e17de11fc69965b3c8410eb002dadba0",
+      "mode": "100644"
+    },
+    "movie_pipeline/sound_design.py": {
+      "sha": "fb3482fa4b84092490dd0aac670013dbb3ffefbe",
+      "mode": "100644"
+    },
+    "movie_pipeline/soundtrack.py": {
+      "sha": "d560fa4f52133ca0bf27332cbd674584cd544277",
+      "mode": "100644"
+    },
+    "movie_pipeline/source_pool.py": {
+      "sha": "9bde0696ff928666f9c2e99704d06419796dd1eb",
+      "mode": "100644"
+    },
+    "movie_pipeline/speech_recovery.py": {
+      "sha": "fb2816da4e887bfa3ce6b2684b7c0be58e4c6ba2",
+      "mode": "100644"
+    },
+    "movie_pipeline/still_thumbnails.py": {
+      "sha": "92d636cc2f5602dadedeac10998ff44d716994c7",
+      "mode": "100644"
+    },
+    "movie_pipeline/stills_trailer.py": {
+      "sha": "1880af18ec697dec4bab4cd732af45c3278f959d",
+      "mode": "100644"
+    },
+    "movie_pipeline/subtitles.py": {
+      "sha": "18a0b54bb10f44d662b13dce8047c13fc8e67489",
+      "mode": "100644"
+    },
+    "movie_pipeline/telegram.py": {
+      "sha": "da6f66f3f1e5c59d075bb8fd5f1914d352d264d1",
+      "mode": "100644"
+    },
+    "movie_pipeline/thumbnail_fallback.py": {
+      "sha": "9c39e33f344b041ff211350de0eb4289826d06cf",
+      "mode": "100644"
+    },
+    "movie_pipeline/thumbnail_lab.py": {
+      "sha": "0d13983f8bd73fe0ef760e546b79aabb0ded73c5",
+      "mode": "100644"
+    },
+    "movie_pipeline/thumbnail_studio.py": {
+      "sha": "606ee739684ef613fc8242ab4c54bb14ef6dc86a",
+      "mode": "100644"
+    },
+    "movie_pipeline/thumbnails.py": {
+      "sha": "c9d968b1a5c407dc304a243d7b7f1b72eac0a24b",
+      "mode": "100644"
+    },
+    "movie_pipeline/timing.py": {
+      "sha": "7904ee9b29f8948dbc40dd316f395adf1c722b38",
+      "mode": "100644"
+    },
+    "movie_pipeline/video_settings.py": {
+      "sha": "b6224a4b30f58c3e5852c062a9c0d43358fb0972",
+      "mode": "100644"
+    },
+    "movie_pipeline/voice.py": {
+      "sha": "bf4e7a2357d2b30a42e35d9c9a3131369c41fd0b",
+      "mode": "100644"
+    },
+    "movie_pipeline/wiki.py": {
+      "sha": "2207ac61912daaa13af90aa0f48419504b905d46",
+      "mode": "100644"
+    },
+    "pronunciations.json": {
+      "sha": "5166be19f03f75f552a14e44394520bbf72f3041",
+      "mode": "100644"
+    },
+    "pyproject.toml": {
+      "sha": "57569647dd7396b425b673792ea92316bb049732",
+      "mode": "100644"
+    },
+    "scripts/__init__.py": {
+      "sha": "76b4750b559c83d8327946c97a5248c18c790022",
+      "mode": "100644"
+    },
+    "scripts/benchmark_models.py": {
+      "sha": "2bf517a5eb10021f9574a9b6f6d0465c3a79927c",
+      "mode": "100644"
+    },
+    "scripts/bootstrap_ollama.sh": {
+      "sha": "930baf3deb45a91471c268852df1c0bbaccc41f5",
+      "mode": "100644"
+    },
+    "scripts/branding_preview.py": {
+      "sha": "fc000feecf8f458b1032feef533c328301f237a3",
+      "mode": "100644"
+    },
+    "scripts/cleanup_work.py": {
+      "sha": "29be6fa696b54c2ad955b39a933b123086636fe1",
+      "mode": "100644"
+    },
+    "scripts/expire_production_caches.py": {
+      "sha": "f60c0a1ec571833f9ea2f787f395a15d751fa67e",
+      "mode": "100644"
+    },
+    "scripts/generate_music.py": {
+      "sha": "edef183bc3716ebdf0ec19ed2ef9f380130ca154",
+      "mode": "100644"
+    },
+    "scripts/install_ollama.py": {
+      "sha": "129ce0f2b284429e9937d9c9ae9c99abd2adc22a",
+      "mode": "100644"
+    },
+    "scripts/install_system_packages.sh": {
+      "sha": "6fac5f789ff3d018a9d65f3e1dc6845e8432bbe4",
+      "mode": "100755"
+    },
+    "scripts/natural_preview.py": {
+      "sha": "d4cbac64d3c291085ef1cd3e89fa593adc945e61",
+      "mode": "100644"
+    },
+    "scripts/natural_voice_preview.py": {
+      "sha": "71ac12881064d64a9df7eb6021d908b418afc556",
+      "mode": "100644"
+    },
+    "scripts/preflight.py": {
+      "sha": "ca2a5e173ebc1b2e6ec616cf2e534e9e39268e52",
+      "mode": "100644"
+    },
+    "scripts/prepare_cookies.py": {
+      "sha": "b4a9eb5810455204b56ae62f078db98c28f42092",
+      "mode": "100644"
+    },
+    "scripts/prepare_reactions.py": {
+      "sha": "a867bbd9ec287b15e39ede8b4008c5f30222c960",
+      "mode": "100644"
+    },
+    "scripts/prepare_voice.py": {
+      "sha": "ac6c4f2780295b451c759043dd4566956d6ea093",
+      "mode": "100644"
+    },
+    "scripts/quality_preview.py": {
+      "sha": "c17b6b73b694b851b00c321dfc6ac191c0c6cf5b",
+      "mode": "100644"
+    },
+    "scripts/rank_intro_preview.py": {
+      "sha": "6b0b89dab85e173cf9a3f15d8745e6f57ff051ee",
+      "mode": "100644"
+    },
+    "scripts/review_package.py": {
+      "sha": "95099fcfa222c1510fe310c84c39437213c61935",
+      "mode": "100644"
+    },
+    "scripts/run_logged.sh": {
+      "sha": "8cd2f6c7cbdd8f915f87ac32d884e9c757b68392",
+      "mode": "100755"
+    },
+    "scripts/runner_disk.py": {
+      "sha": "a15be0adfc2135ab247dbe80f96770009ad257b6",
+      "mode": "100644"
+    },
+    "scripts/warp_proxy.sh": {
+      "sha": "0f7c236001de59bdb374970b7bd445856639c2a7",
+      "mode": "100755"
+    },
+    "tests/conftest.py": {
+      "sha": "8fa8d9d0b9829a580d895e0813bfc47359db308c",
+      "mode": "100644"
+    },
+    "tests/fixtures/editorial_raw_samples.json": {
+      "sha": "8b143247048285975a1561b3ab86e54a56ce12fa",
+      "mode": "100644"
+    },
+    "tests/test_audio_assembly.py": {
+      "sha": "9dd3ed2d77b5f2dd8d75f460317abef44f0bb149",
+      "mode": "100644"
+    },
+    "tests/test_audio_review.py": {
+      "sha": "27cf4f8572655d862688a748ab1e7ee4bbf30743",
+      "mode": "100644"
+    },
+    "tests/test_auth.py": {
+      "sha": "3b59607547a09b57eaa78b404eb083c7a92efe6e",
+      "mode": "100644"
+    },
+    "tests/test_auto_quality.py": {
+      "sha": "c05c8a52bf0f696c2a73b0a1da3d78cefa2e5edc",
+      "mode": "100644"
+    },
+    "tests/test_availability.py": {
+      "sha": "0a1587aba3ea682bc5f8667393a048cd2ae37c6b",
+      "mode": "100644"
+    },
+    "tests/test_availability_line_aggregators.py": {
+      "sha": "bfbd5d931aa14acf93f7c755653dbefc8c1c63fa",
+      "mode": "100644"
+    },
+    "tests/test_branding_motion.py": {
+      "sha": "b187932e40bf20103508a13257ec1ca9f03e5413",
+      "mode": "100644"
+    },
+    "tests/test_comparison_export.py": {
+      "sha": "3007bca34e73d302f9ea9c3042c8d8a40d1423a2",
+      "mode": "100644"
+    },
+    "tests/test_core.py": {
+      "sha": "7d1e6eac58ffbd958ab81ef7c2d2f8e004ffd107",
+      "mode": "100644"
+    },
+    "tests/test_cta.py": {
+      "sha": "f94914320fa1053873ec973361b4d49a080ca392",
+      "mode": "100644"
+    },
+    "tests/test_cta_animation.py": {
+      "sha": "4cdf0e572042a9eb53116ede1a011d09b2f9ddb8",
+      "mode": "100644"
+    },
+    "tests/test_download_access.py": {
+      "sha": "59bda450752fce0d1a56ed1c65b1eb7a8464567d",
+      "mode": "100644"
+    },
+    "tests/test_edit_upgrades.py": {
+      "sha": "0fedbea143363adbff9e6e7c5514ebbbd1c47f21",
+      "mode": "100644"
+    },
+    "tests/test_editing.py": {
+      "sha": "47f0484c70e1be53027c99ff930b450f367889d5",
+      "mode": "100644"
+    },
+    "tests/test_end_slates.py": {
+      "sha": "6e1b4564a47d587d4c8b095172258d9b4835cbb9",
+      "mode": "100644"
+    },
+    "tests/test_expire_production_caches.py": {
+      "sha": "a3bb1ba81bd1cbe05092507007b93ad8bc8eaf82",
+      "mode": "100644"
+    },
+    "tests/test_footage_history.py": {
+      "sha": "bbe602657781d246fa24ceb4078a1baafa7082f7",
+      "mode": "100644"
+    },
+    "tests/test_footage_quality.py": {
+      "sha": "6d998f34e29737579a086be5f11ee31755f2d73b",
+      "mode": "100644"
+    },
+    "tests/test_memes.py": {
+      "sha": "3517df52546765422935b292479322e215e83459",
+      "mode": "100644"
+    },
+    "tests/test_movie_ranks_upgrade.py": {
+      "sha": "5dc4a426fda7393ba726c062f34ca5a8790d3b39",
+      "mode": "100644"
+    },
+    "tests/test_natural_narration.py": {
+      "sha": "e850434f5a3ab6c7dea345c1ce85a145ca8d1dd5",
+      "mode": "100644"
+    },
+    "tests/test_ollama_bootstrap.py": {
+      "sha": "52e53a8b2e1736bc109a23866434cdc2f41c8806",
+      "mode": "100644"
+    },
+    "tests/test_packaging.py": {
+      "sha": "ca5f9562a93a320f44cea48e94eb7731fdd72acb",
+      "mode": "100644"
+    },
+    "tests/test_previews.py": {
+      "sha": "e78d8cc42136526f2a7a27ecec985749dad03f6c",
+      "mode": "100644"
+    },
+    "tests/test_production.py": {
+      "sha": "c8e354b8b67d3bd9e7175710d5b68a604ba7a00d",
+      "mode": "100644"
+    },
+    "tests/test_rank_intro.py": {
+      "sha": "82fcd4bc61482d0c459625f20a32af8c2ece3b6c",
+      "mode": "100644"
+    },
+    "tests/test_rank_speech.py": {
+      "sha": "0225cb2297f478bd0ddb7dde09d4c5529fb7f6d1",
+      "mode": "100644"
+    },
+    "tests/test_render.py": {
+      "sha": "bbc45f7f8bf8e5e5c39c3ac62204a13da4ca4bd7",
+      "mode": "100644"
+    },
+    "tests/test_render_motion.py": {
+      "sha": "c7034b198a169cdcf469c0196641a831b31851e7",
+      "mode": "100644"
+    },
+    "tests/test_research.py": {
+      "sha": "eabb9bd9b8f926bba831d31ae978e51363dcb495",
+      "mode": "100644"
+    },
+    "tests/test_retention.py": {
+      "sha": "f41dd0ff81518affe0950270aa3d2d50959fa3d6",
+      "mode": "100644"
+    },
+    "tests/test_review.py": {
+      "sha": "2ecbf287ecc0748d1c2ee98565818ca7ee1c6073",
+      "mode": "100644"
+    },
+    "tests/test_runner_disk.py": {
+      "sha": "c9a225845519893284d465bf25d42f6db0e0a51f",
+      "mode": "100644"
+    },
+    "tests/test_runtime_resilience.py": {
+      "sha": "073b337f236ef4d5eec757401ddd261e4cad21a7",
+      "mode": "100644"
+    },
+    "tests/test_scenes.py": {
+      "sha": "e9b94a559b723dcbc5ee4c0f2d5ad75302e63648",
+      "mode": "100644"
+    },
+    "tests/test_script.py": {
+      "sha": "b1edc355bda12f431a05512fdc13f21c88939662",
+      "mode": "100644"
+    },
+    "tests/test_secondary_footage.py": {
+      "sha": "72926b3b59058d75ce7df5832bb5edf680f770c9",
+      "mode": "100644"
+    },
+    "tests/test_sound_design.py": {
+      "sha": "db4168a479c9fbcc0bafca01f12f69a3cca30e73",
+      "mode": "100644"
+    },
+    "tests/test_source_pool.py": {
+      "sha": "9aa3be10643cad69113c1a80c8cbf31e0305dcaa",
+      "mode": "100644"
+    },
+    "tests/test_speech_recovery.py": {
+      "sha": "26ea548d615605d2ecf068c6829e7540bf2eade6",
+      "mode": "100644"
+    },
+    "tests/test_still_thumbnails.py": {
+      "sha": "28f63ac1ac8f1258a145b06d63136836b8bea047",
+      "mode": "100644"
+    },
+    "tests/test_stills_fallback.py": {
+      "sha": "f21f2d05d8fb0da742b479acc36d2cc56b2edad1",
+      "mode": "100644"
+    },
+    "tests/test_storage.py": {
+      "sha": "cee17152fea5c742328b62fb7ee112c1ea0afb05",
+      "mode": "100644"
+    },
+    "tests/test_story.py": {
+      "sha": "7dcb9b9ad6aa78641c480975623321d646fb32fb",
+      "mode": "100644"
+    },
+    "tests/test_subtitles.py": {
+      "sha": "828162db9cca48770b9c68454d937cee62f8d3f2",
+      "mode": "100644"
+    },
+    "tests/test_telegram.py": {
+      "sha": "3ea170baa0d92f2af430fcc792c13f69b97644ca",
+      "mode": "100644"
+    },
+    "tests/test_thumbnail_studio.py": {
+      "sha": "68c22b21ba8277c05738bbd0de4c926857079558",
+      "mode": "100644"
+    },
+    "tests/test_thumbnails.py": {
+      "sha": "4fac327019ab3e54ced64a5baf21be3e515cd722",
+      "mode": "100644"
+    },
+    "tests/test_timing.py": {
+      "sha": "524a3340945d6f6750547b94ca59d9d8a52fee5a",
+      "mode": "100644"
+    },
+    "tests/test_trailer_identity.py": {
+      "sha": "0f3d3bf21014d370c34c4be56900c59a724ef266",
+      "mode": "100644"
+    },
+    "tests/test_upgrades_nov.py": {
+      "sha": "eb526f0cd5481059c11656240b4fed9f0832a630",
+      "mode": "100644"
+    },
+    "tests/test_video_timestamps.py": {
+      "sha": "25dd2b0a84c7491c9df3790c76407ac70744fedc",
+      "mode": "100644"
+    },
+    "tests/test_visual_pacing.py": {
+      "sha": "071afdfcc4c5e51b055dc66eb248191794212131",
+      "mode": "100644"
+    },
+    "tests/test_voice.py": {
+      "sha": "9478b0dca37921a060e731dd41820512c1da7bc1",
+      "mode": "100644"
+    },
+    "tests/test_voice_boundaries.py": {
+      "sha": "37fe731b63dcd1f46a99ea1fbac87da9da006d8e",
+      "mode": "100644"
+    },
+    "tests/test_voice_selection.py": {
+      "sha": "aef2b9481f33bd94ff5e2dd91e3bad7ae8eac3c2",
+      "mode": "100644"
+    },
+    "tests/test_warm_stages.py": {
+      "sha": "361b9be88bc6d25a8d7ec02798b9548566294b80",
+      "mode": "100644"
+    },
+    "tests/test_workflow.py": {
+      "sha": "a2a81afe5dcb5015689a8787387063c30eb335a9",
+      "mode": "100644"
+    }
+  },
+  "initial_copy_changes": [
+    ".github/workflows/generate-video.yml",
+    ".github/workflows/review-export.yml",
+    "README.md",
+    "VERSION.md"
+  ],
+  "notes": [
+    "All voice/audio/font/meme assets copied with identical blob SHA and mode.",
+    "Baseline fixture manifest remains frozen as integration evolves.",
+    "Only the Gemini edition is modified."
+  ]
+}

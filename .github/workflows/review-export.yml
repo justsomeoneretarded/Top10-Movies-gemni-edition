@@ -1,0 +1,170 @@
+name: Review Existing Export
+run-name: "Review export — ${{ inputs.source_run_id || 'latest successful video' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Completed Generate Video run ID (blank selects latest successful run)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Resolve the completed source run
+        id: source
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+          run_id = os.environ.get('SOURCE_RUN_ID', '').strip()
+          if not run_id:
+              url = (os.environ['GITHUB_API_URL'].rstrip('/') + '/repos/' +
+                     os.environ['GITHUB_REPOSITORY'] +
+                     '/actions/workflows/generate-video.yml/runs?status=success&per_page=1')
+              request = urllib.request.Request(url, headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              })
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  runs = json.load(response).get('workflow_runs', [])
+              if not runs:
+                  raise SystemExit('No successful Generate Video run was found.')
+              run_id = str(runs[0]['id'])
+          if not run_id.isdigit():
+              raise SystemExit('Source run ID must contain digits only.')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'run_id={run_id}\n')
+          print(f'Reviewing completed video run {run_id}.')
+          PY
+      - name: Download the existing finished package
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          pattern: movie-video-*
+          path: review-source
+      - name: Ensure FFmpeg is available
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+      - name: Create a bounded review copy and inspection frames
+        env:
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import math
+          import os
+          import re
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          source_root = Path('review-source').resolve()
+          videos = list(source_root.rglob('final-video.mp4'))
+          if len(videos) != 1:
+              raise SystemExit(f'Expected one final-video.mp4; found {len(videos)}.')
+          video = videos[0].resolve()
+          if not video.is_relative_to(source_root) or not video.is_file():
+              raise SystemExit('Invalid source video path.')
+          output = Path('review-output')
+          output.mkdir(exist_ok=True)
+          frames = output / 'frames'
+          frames.mkdir(exist_ok=True)
+          metadata = json.loads(subprocess.check_output([
+              'ffprobe', '-v', 'error', '-show_format', '-show_streams',
+              '-show_chapters', '-of', 'json', str(video),
+          ], text=True))
+          seconds = float(metadata['format']['duration'])
+          if not math.isfinite(seconds) or seconds <= 0:
+              raise SystemExit('Source export has no valid duration.')
+          (output / 'original-media-metadata.json').write_text(json.dumps(metadata, indent=2))
+
+          def ffmpeg(*arguments):
+              subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+                              '-y', *map(str, arguments)], check=True)
+
+          # Reserve space for original thumbnails, inspection frames and boundary audio.
+          # This is an inspection copy only; it never replaces the finished export.
+          video_budget = 19 * 1024 * 1024
+          bitrate = max(60000, min(240000, int((video_budget * 8 / seconds - 48000) * .90)))
+          ffmpeg('-i', video, '-map', '0:v:0', '-map', '0:a:0?',
+                 '-vf', 'scale=640:360:force_original_aspect_ratio=decrease:flags=lanczos,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=20',
+                 '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', bitrate,
+                 '-maxrate', bitrate, '-bufsize', bitrate * 2, '-threads', 2,
+                 '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '48k', '-ac', 1,
+                 '-movflags', '+faststart', output / 'review-low-resolution.mp4')
+
+          ancillary = ['subtitles.srt', 'description.txt', 'recommended-title.txt',
+                       'sources-and-credits.txt', 'thumbnail-01.jpg',
+                       'thumbnail-02.jpg', 'thumbnail-03.jpg', 'thumbnail-04.jpg', 'thumbnail-05.jpg']
+          for name in ancillary:
+              source = video.parent / name
+              if source.is_file() and not source.is_symlink():
+                  shutil.copyfile(source, output / name)
+
+          sample_times = {0., .3, 1., 3., 6., 12., seconds * .40,
+                          max(0., seconds - 5), max(0., seconds - 1)}
+          for chapter in metadata.get('chapters', []):
+              start = float(chapter.get('start_time', 0))
+              sample_times.update((start + .5, start + 2.))
+          subtitle_path = video.parent / 'subtitles.srt'
+          if subtitle_path.exists():
+              def srt_seconds(value):
+                  hours, minutes, tail = value.replace(',', '.').split(':')
+                  return int(hours) * 3600 + int(minutes) * 60 + float(tail)
+              for block in subtitle_path.read_text().split('\n\n'):
+                  time = re.search(r'(\d{2}:\d{2}:\d{2},\d{3})\s+-->', block)
+                  if time and re.search(r'\bsubscribe\b', block, re.IGNORECASE):
+                      start = srt_seconds(time.group(1))
+                      if seconds * .20 <= start <= seconds * .70:
+                          sample_times.update((max(0., start - .3), start + .5, start + 2.))
+          sample_times = sorted(time for time in sample_times if 0 <= time < seconds)[:40]
+          manifest = []
+          for index, time in enumerate(sample_times):
+              name = f'{index:02}-{time:09.3f}.jpg'
+              ffmpeg('-ss', time, '-i', video, '-frames:v', 1,
+                     '-vf', 'scale=640:-2:flags=lanczos', '-q:v', 5, frames / name)
+              manifest.append({'file': f'frames/{name}', 'source_seconds': time})
+
+          if any(stream.get('codec_type') == 'audio' for stream in metadata.get('streams', [])):
+              for name, start in [('opening-audio.wav', 0), ('middle-audio.wav', seconds * .5), ('ending-audio.wav', max(0., seconds - 20))]:
+                  ffmpeg('-ss', start, '-i', video, '-t', min(20, seconds - start),
+                         '-vn', '-ar', 16000, '-ac', 1, '-c:a', 'pcm_s16le', output / name)
+
+          report = {'source_run_id': os.environ['SOURCE_RUN_ID'],
+                    'original_duration_seconds': seconds, 'frames': manifest,
+                    'note': 'Inspection copy only. Original finished export is unchanged.'}
+          (output / 'review-manifest.json').write_text(json.dumps(report, indent=2))
+          total = sum(path.stat().st_size for path in output.rglob('*') if path.is_file())
+          if total > 30 * 1024 * 1024:
+              raise SystemExit(f'Review package exceeds the 30 MiB limit ({total} bytes).')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+              summary.write(f'Review of video run **{os.environ["SOURCE_RUN_ID"]}**: '
+                            f'{seconds:.1f} seconds; compact inspection package {total / 1024**2:.1f} MiB.\n')
+          print(f'Created compact inspection package: {total / 1024**2:.1f} MiB.')
+          PY
+      - name: Downloadable inspection package
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-export-${{ steps.source.outputs.run_id }}
+          path: review-output/
+          retention-days: 2
+          compression-level: 0
+          if-no-files-found: error

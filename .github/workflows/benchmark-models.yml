@@ -1,0 +1,161 @@
+name: Benchmark Free Models
+run-name: "Benchmark — free models on the CPU runner"
+
+# Manual only. Each model family runs in its own parallel job on a fresh
+# free runner; timings appear as annotations on the run page and the audio /
+# text samples are uploaded as one artifact for listening.
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Run every benchmark, or one family"
+        required: true
+        type: choice
+        default: all
+        options: [all, llm, voice, music]
+      music_seconds:
+        description: "Seconds of music to generate per ACE-Step sample"
+        required: true
+        type: choice
+        default: '30'
+        options: ['20', '30', '60']
+
+permissions:
+  contents: read
+
+jobs:
+  llm:
+    if: inputs.only == 'all' || inputs.only == 'llm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_URL: http://127.0.0.1:11434
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install requests
+      - name: Start Ollama
+        run: |
+          curl --fail --show-error --location --retry 3 https://ollama.com/install.sh -o "$RUNNER_TEMP/ollama.sh"
+          sh "$RUNNER_TEMP/ollama.sh"
+          (ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &)
+          for i in $(seq 1 60); do curl -sf "$OLLAMA_URL/api/tags" >/dev/null && break; sleep 1; done
+      - name: Script models (current, then upgrades)
+        run: python scripts/benchmark_models.py llm qwen3:4b qwen3:8b gemma4:12b gemma4:e4b
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-llm
+          path: bench-output/
+          if-no-files-found: ignore
+          retention-days: 2
+
+  chatterbox:
+    if: inputs.only == 'all' || inputs.only == 'voice'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg libsndfile1
+          python -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[voice]'
+      - name: Chatterbox Turbo and original
+        run: python scripts/benchmark_models.py chatterbox
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-chatterbox
+          path: bench-output/
+          if-no-files-found: ignore
+          retention-days: 2
+
+  qwen-tts:
+    if: inputs.only == 'all' || inputs.only == 'voice'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg libsndfile1 sox
+          python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install qwen-tts faster-whisper soundfile numpy
+      - name: Qwen3-TTS 0.6B and 1.7B
+        run: python scripts/benchmark_models.py qwen-tts 0.6B 1.7B
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-qwen-tts
+          path: bench-output/
+          if-no-files-found: ignore
+          retention-days: 2
+
+  acestep:
+    if: inputs.only == 'all' || inputs.only == 'music'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      ACESTEP_INIT_LLM: 'false'
+      MUSIC_SECONDS: ${{ inputs.music_seconds }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk for the music model
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install ACE-Step 1.5 (CPU)
+        shell: bash
+        run: |
+          set -o pipefail
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg libsndfile1
+          git clone --depth 1 https://github.com/ACE-Step/ACE-Step-1.5 "$RUNNER_TEMP/acestep"
+          # The same torch release ACE-Step locks, as CPU wheels.
+          python -m pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -3
+          cd "$RUNNER_TEMP/acestep"
+          python - <<'PY'
+          import collections, subprocess, sys, tomllib
+          deps = tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]
+          skip = ("torch==", "torch>", "torch;", "torchvision", "torchaudio", "nano-vllm", "mlx")
+          keep = [d for d in deps if not d.replace(" ", "").lower().startswith(skip) and d.split(";")[0].strip().lower() != "torch"]
+          # Constrain everything to the versions in ACE-Step's own lockfile (CPU torch builds).
+          locked = collections.defaultdict(set)
+          for package in tomllib.load(open("uv.lock", "rb"))["package"]:
+              if "version" in package and "editable" not in package.get("source", {}) and "path" not in package.get("source", {}):
+                  locked[package["name"]].add(package["version"].split("+")[0])
+          pins = [f"{name}=={next(iter(versions))}" for name, versions in sorted(locked.items())
+                  if len(versions) == 1 and not name.startswith(("nvidia", "triton", "nano-vllm", "flash"))]
+          open("cpu-constraints.txt", "w").write("\n".join(pins) + "\n")
+          print(f"::notice title=ACE-Step lockfile constraints::{len(pins)} packages pinned")
+          failed = []
+          for dep in keep:
+              done = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-c", "cpu-constraints.txt", dep],
+                                    capture_output=True, text=True)
+              if done.returncode:
+                  failed.append(dep)
+                  tail = (done.stdout + done.stderr).strip().splitlines()[-6:]
+                  print(f"::warning title=ACE-Step dependency skipped: {dep}::" + "%0A".join(tail))
+          print(f"::notice title=ACE-Step dependencies::{len(keep)-len(failed)} installed, {len(failed)} skipped: {failed}")
+          PY
+          python -m pip install -q --no-deps -e . 2>&1 | tail -3
+      - name: Generate instrumental samples
+        run: python scripts/benchmark_models.py acestep "$RUNNER_TEMP/acestep" --seconds "$MUSIC_SECONDS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-acestep
+          path: bench-output/
+          if-no-files-found: ignore
+          retention-days: 2

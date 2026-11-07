@@ -1,0 +1,129 @@
+name: Thumbnail Lab
+# Builds only the five thumbnails (from each title's own stills and trailer frames) for a list (about 20 minutes) and saves them, with a
+# side-by-side sheet and the studio report, to the thumbnail-lab branch and as an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: "Video title"
+        required: true
+        type: string
+      movies:
+        description: "Titles and years, separated by semicolons: Arrival (2016); Inception (2010)"
+        required: true
+        type: string
+      description:
+        description: "Creative context (optional)"
+        required: false
+        type: string
+        default: ""
+      content_type:
+        description: "Movies or shows / series"
+        required: true
+        type: choice
+        default: Movies
+        options: [Movies, Shows]
+      phrases:
+        description: "Optional headline phrases for thumbnail 5, separated by semicolons"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: thumbnail-lab
+  cancel-in-progress: false
+
+jobs:
+  lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      VIDEO_TITLE: ${{ inputs.title }}
+      VIDEO_BRIEF: ${{ inputs.description }}
+      MOVIE_LIST: ${{ inputs.movies }}
+      VIDEO_TYPE: ${{ inputs.content_type }}
+      NARRATOR: Warguy
+      VIDEO_MINUTES: Auto
+      TRY_4K: "true"
+      FACT_CHECK: "false"
+      LAB_PHRASES: ${{ inputs.phrases }}
+      LAB_SAVE_STILLS: 'true'
+      TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      OLLAMA_HOST: 127.0.0.1:11435
+      OLLAMA_URL: http://127.0.0.1:11435
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama-models
+      SCENE_DESCRIPTIONS: 'false'  # faster; composites mostly use TMDB stills
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: System dependencies
+        timeout-minutes: 35
+        run: bash scripts/install_system_packages.sh ffmpeg tesseract-ocr
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          bash scripts/run_logged.sh "Dependency install" python -m pip install -e '.[thumbnails]'
+      - name: Configure optional YouTube authentication
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: python -m scripts.prepare_cookies
+      - name: Start YouTube proof-of-origin token provider
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare optional WARP fallback route for trailer downloads
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/warp_proxy.sh
+      - name: Start local Ollama for scene descriptions and frame ratings
+        run: |
+          curl --fail --show-error --location --retry 3 https://ollama.com/install.sh -o "$RUNNER_TEMP/ollama.sh"
+          sh "$RUNNER_TEMP/ollama.sh"
+          (ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &)
+          for i in $(seq 1 60); do curl -sf "$OLLAMA_URL/api/tags" >/dev/null && break; sleep 1; done
+      - name: Build the thumbnails
+        run: |
+          mkdir -p lab-output
+          set -o pipefail
+          python -m movie_pipeline.thumbnail_lab 2>&1 | tee lab-output/lab.log
+      - name: Remove temporary YouTube cookies
+        if: always()
+        run: rm -f "$RUNNER_TEMP/youtube-cookies.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: thumbnail-lab-${{ github.run_number }}
+          path: lab-output/
+          retention-days: 7
+      - name: Save results to the thumbnail-lab branch
+        if: always()
+        env:
+          RUN: ${{ github.run_number }}
+        run: |
+          slug=$(echo "$VIDEO_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | cut -c1-40 | sed 's/-$//')
+          target="runs/${RUN}-${slug}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code origin thumbnail-lab >/dev/null 2>&1; then
+            git fetch -q origin thumbnail-lab && git worktree add -q ../lab thumbnail-lab
+          else
+            git worktree add -q --orphan -b thumbnail-lab ../lab
+          fi
+          mkdir -p "../lab/$target"
+          cp lab-output/*.jpg lab-output/*.json lab-output/*.log "../lab/$target/" 2>/dev/null || true
+          if [ -d lab-output/stills ]; then mkdir -p "../lab/$target/stills" && cp lab-output/stills/*.jpg "../lab/$target/stills/"; fi
+          cd ../lab
+          git add -A
+          git commit -q -m "Thumbnail Lab ${RUN}: ${VIDEO_TITLE}"
+          git push -q origin thumbnail-lab
+          echo "::notice title=Thumbnail Lab saved::branch thumbnail-lab, folder ${target}"

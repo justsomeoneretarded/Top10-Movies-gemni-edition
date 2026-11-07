@@ -1,0 +1,87 @@
+name: Runner Setup Checks
+on:
+  push:
+    branches: [fix/runner-model-disk]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: runner-setup-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      SCRIPT_MODEL: gemma4:12b
+      TTS_MODEL: original
+      OLLAMA_HOST: 127.0.0.1:11435
+      OLLAMA_URL: http://127.0.0.1:11435
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_FLASH_ATTENTION: '1'
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama-models
+      HF_HUB_DISABLE_XET: '1'
+      HF_HOME: ${{ github.workspace }}/work/models/huggingface
+      TORCH_HOME: ${{ github.workspace }}/work/models/torch
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare the actual hosted runner
+        run: python3 -m scripts.runner_disk --stage script
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: System dependencies
+        run: bash scripts/install_system_packages.sh ffmpeg zstd
+      - name: Install test dependencies
+        run: python -m pip install -e '.[test]'
+      - name: Setup regression checks
+        run: |
+          bash -n scripts/bootstrap_ollama.sh
+          python -m compileall -q scripts
+          pytest -q tests/test_runner_disk.py tests/test_ollama_bootstrap.py tests/test_storage.py tests/test_workflow.py tests/test_warm_stages.py
+      - name: Validate workflow syntax
+        run: |
+          curl -fLsS --retry 2 https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tgz"
+          tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
+      - name: Restore the existing model cache without deleting it
+        uses: actions/cache/restore@v4
+        with:
+          path: work/models
+          key: models-cpu-v3-thumbnails-${{ runner.os }}-${{ env.TTS_MODEL }}-${{ env.SCRIPT_MODEL }}
+          restore-keys: models-cpu-v2-${{ runner.os }}-${{ env.TTS_MODEL }}-${{ env.SCRIPT_MODEL }}
+      - name: Check space before voice dependencies
+        run: python3 -m scripts.runner_disk --stage voice-warm
+      - name: Install the same CPU voice dependencies as production
+        run: |
+          python -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[voice]'
+      - name: Install pinned Ollama and prepare the real script model
+        run: bash scripts/bootstrap_ollama.sh
+      - name: Verify CPU inference, retry-safe setup and remaining headroom
+        run: |
+          python - <<'PY'
+          import json,os,subprocess,urllib.request
+          from scripts.install_ollama import existing_install
+          url=os.environ["OLLAMA_URL"].rstrip("/")
+          payload=json.dumps({"model":os.environ["SCRIPT_MODEL"],"prompt":"Reply with READY only.",
+                              "stream":False,"think":False,"keep_alive":0,
+                              "options":{"num_ctx":1024,"num_predict":24,"num_thread":2}}).encode()
+          request=urllib.request.Request(url+"/api/generate",data=payload,headers={"Content-Type":"application/json"})
+          with urllib.request.urlopen(request,timeout=300) as response:
+              result=json.load(response)
+          assert str(result.get("response","")).strip(),result
+          print("CPU model response:",result["response"])
+          print("Model:",result.get("model"),"done:",result.get("done"))
+          binary=existing_install()
+          assert binary is not None
+          libraries=binary.parent/"lib"/"ollama"
+          assert not any(p.name.startswith(("cuda_v","vulkan")) for p in libraries.iterdir())
+          print("Verified CPU runtime without bundled CUDA/Vulkan directories:",libraries)
+          subprocess.run(["bash","scripts/bootstrap_ollama.sh"],check=True,timeout=300)
+          subprocess.run(["python","-m","scripts.runner_disk","--stage","ready"],check=True)
+          PY

@@ -1,0 +1,32 @@
+{
+  "titan": {
+    "file": "titan.ogg",
+    "title": "Titan",
+    "artist": "Scott Buckley",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "source": "https://www.scottbuckley.com.au/library/titan/",
+    "sha256": "1ac6dd2a5145bd5283101aa496626ac4bc734d85a168ce92da717215a885e22c",
+    "modifications": "65-second excerpt; re-encoded to Vorbis; normalized and crossfaded during production."
+  },
+  "celestial": {
+    "file": "celestial.ogg",
+    "title": "Celestial",
+    "artist": "Scott Buckley",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "source": "https://www.scottbuckley.com.au/library/celestial/",
+    "sha256": "32cb3ad2a4ea609660daabf9aca3d05d7d7b9c448c8a49197f7cd94b3c0a9820",
+    "modifications": "65-second excerpt; re-encoded to Vorbis; normalized and crossfaded during production."
+  },
+  "aurora": {
+    "file": "aurora.ogg",
+    "title": "Aurora",
+    "artist": "Scott Buckley",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "source": "https://www.scottbuckley.com.au/library/aurora/",
+    "sha256": "543751e58908fec2b083f787f7c0bf639cf9fcc611d73b4e48f17d9aa20252af",
+    "modifications": "65-second excerpt; re-encoded to Vorbis; normalized and crossfaded during production."
+  }
+}

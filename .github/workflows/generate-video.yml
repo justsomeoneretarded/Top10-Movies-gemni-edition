@@ -1,0 +1,684 @@
+name: Generate Video — Gemini
+run-name: "Video — ${{ inputs.title }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: "Video title / topic (ranking follows your list, best first)"
+        required: true
+        type: string
+      description:
+        description: "Creative context, style, scenes and thumbnail (voice and length are selected below)"
+        required: true
+        type: string
+      movies:
+        description: "Titles and years, separated by semicolons: Arrival (2016); Inception (2010)"
+        required: true
+        type: string
+      content_type:
+        description: "Choose whether this list contains movies or shows / series"
+        required: true
+        type: choice
+        default: Movies
+        options:
+          - Movies
+          - Shows
+      narrator:
+        description: "Narrator voice (overrides any voice instruction in the creative brief)"
+        required: true
+        type: choice
+        default: Warguy
+        options:
+          - Warguy
+          - Kit Laser
+          - Female
+      tts_model:
+        description: "Speech model (original Chatterbox by default)"
+        required: true
+        type: choice
+        default: original
+        options:
+          - original
+          - turbo
+          - nano
+      duration_minutes:
+        description: "Video length in minutes (±25%); Auto chooses a sensible length for this list"
+        required: true
+        type: choice
+        default: 'Auto'
+        options:
+          - 'Auto'
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
+          - '9'
+          - '10'
+          - '11'
+          - '12'
+          - '13'
+          - '14'
+          - '15'
+          - '16'
+          - '17'
+          - '18'
+          - '19'
+          - '20'
+          - '21'
+          - '22'
+          - '23'
+          - '24'
+          - '25'
+          - '26'
+          - '27'
+          - '28'
+          - '29'
+          - '30'
+      try_4k:
+        description: "Try 4K when every trailer supports it (otherwise choose best shared quality)"
+        required: true
+        type: boolean
+        default: true
+
+  workflow_call:
+    inputs:
+      title:
+        required: true
+        type: string
+      description:
+        required: true
+        type: string
+      movies:
+        required: true
+        type: string
+      content_type:
+        type: string
+        default: Movies
+      narrator:
+        type: string
+        default: Warguy
+      tts_model:
+        type: string
+        default: original
+      duration_minutes:
+        type: string
+        default: Auto
+      try_4k:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: video-production
+  cancel-in-progress: false
+
+jobs:
+  # ---- Parallel warm-up jobs: they fill the run's caches so "produce" can skip most heavy work.
+  # Each is optional; if one fails, produce simply does that part itself.
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      script_parts: ${{ steps.plan.outputs.script_parts }}
+      footage_parts: ${{ steps.plan.outputs.footage_parts }}
+      genre: ${{ steps.plan.outputs.genre }}
+      music_seconds: ${{ steps.plan.outputs.music_seconds }}
+    env:
+      VIDEO_TITLE: ${{ inputs.title }}
+      VIDEO_BRIEF: ${{ inputs.description }}
+      MOVIE_LIST: ${{ inputs.movies }}
+      VIDEO_TYPE: ${{ inputs.content_type }}
+      NARRATOR: ${{ inputs.narrator }}
+      TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      TTS_MODEL: ${{ inputs.tts_model || 'original' }}
+      SCRIPT_MODEL: gemma4:12b
+      TRY_4K: "${{ inputs.try_4k }}"
+      VIDEO_MINUTES: "${{ inputs.duration_minutes }}"
+      OLLAMA_HOST: 127.0.0.1:11435
+      OLLAMA_URL: http://127.0.0.1:11435
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_FLASH_ATTENTION: '1'
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama-models
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: System dependencies
+        timeout-minutes: 35
+        run: bash scripts/install_system_packages.sh ffmpeg
+      - name: Install light dependencies and validate inputs
+        run: |
+          python -m pip install --upgrade pip
+          bash scripts/run_logged.sh "Dependency install" python -m pip install -e .
+          bash scripts/run_logged.sh "Input check" python -m scripts.preflight
+      - name: Research the episode
+        id: plan
+        # Research only (a few minutes), so footage and music start right away; planning has its own job.
+        run: bash scripts/run_logged.sh "Research" python -m movie_pipeline.cli --stage prepare
+      - name: Package research
+        run: tar -czf warm-prepare.tgz work/jobs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warm-prepare
+          path: warm-prepare.tgz
+          retention-days: 1
+
+  plan:
+    # The episode plan (promise, hooks, anchors) that every script section follows.
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      VIDEO_TITLE: ${{ inputs.title }}
+      VIDEO_BRIEF: ${{ inputs.description }}
+      MOVIE_LIST: ${{ inputs.movies }}
+      VIDEO_TYPE: ${{ inputs.content_type }}
+      NARRATOR: ${{ inputs.narrator }}
+      TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      TTS_MODEL: ${{ inputs.tts_model || 'original' }}
+      SCRIPT_MODEL: gemma4:12b
+      TRY_4K: "${{ inputs.try_4k }}"
+      VIDEO_MINUTES: "${{ inputs.duration_minutes }}"
+      OLLAMA_HOST: 127.0.0.1:11435
+      OLLAMA_URL: http://127.0.0.1:11435
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_FLASH_ATTENTION: '1'
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama-models
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare disk before model tools and caches
+        run: python3 -m scripts.runner_disk --stage plan
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: System dependencies
+        timeout-minutes: 35
+        run: bash scripts/install_system_packages.sh ffmpeg zstd
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          bash scripts/run_logged.sh "Dependency install" python -m pip install -e .
+      - uses: actions/download-artifact@v4
+        with:
+          name: warm-prepare
+      - run: tar -xzf warm-prepare.tgz && rm warm-prepare.tgz
+      - name: Prepare local script model
+        run: bash scripts/bootstrap_ollama.sh
+      - name: Plan the episode
+        run: bash scripts/run_logged.sh "Episode plan" python -m movie_pipeline.cli --stage plan
+      - name: Package the plan
+        # Never fails: without a plan the script job still writes every section on its own.
+        run: |
+          shopt -s nullglob
+          dirs=(work/jobs/*/script-sections)
+          if [ ${#dirs[@]} -eq 0 ]; then mkdir -p work/jobs/no-plan/script-sections; dirs=(work/jobs/no-plan/script-sections); fi
+          tar -czf warm-plan.tgz "${dirs[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warm-plan
+          path: warm-plan.tgz
+          retention-days: 1
+
+  music:
+    # An original instrumental score in the video's genre (ACE-Step 1.5, MIT). Optional: any
+    # failure leaves no score and production uses the bundled licensed track.
+    needs: prepare
+    if: ${{ vars.GENRE_MUSIC != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    continue-on-error: true
+    env:
+      ACESTEP_INIT_LLM: 'false'
+      GENRE: ${{ needs.prepare.outputs.genre }}
+      MUSIC_SECONDS: ${{ needs.prepare.outputs.music_seconds }}
+      MUSIC_TOPIC: ${{ inputs.title }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk for the music model
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: System dependencies
+        timeout-minutes: 35
+        run: bash scripts/install_system_packages.sh ffmpeg libsndfile1
+      - name: Install ACE-Step 1.5 (CPU)
+        shell: bash
+        run: |
+          set -o pipefail
+          git clone --depth 1 https://github.com/ACE-Step/ACE-Step-1.5 "$RUNNER_TEMP/acestep"
+          python -m pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -3
+          cd "$RUNNER_TEMP/acestep"
+          python - <<'INSTALL'
+          import collections, subprocess, sys, tomllib
+          deps = tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]
+          skip = ("torch==", "torch>", "torch;", "torchvision", "torchaudio", "nano-vllm", "mlx")
+          keep = [d for d in deps if not d.replace(" ", "").lower().startswith(skip) and d.split(";")[0].strip().lower() != "torch"]
+          locked = collections.defaultdict(set)
+          for package in tomllib.load(open("uv.lock", "rb"))["package"]:
+              if "version" in package and "editable" not in package.get("source", {}) and "path" not in package.get("source", {}):
+                  locked[package["name"]].add(package["version"].split("+")[0])
+          pins = [f"{name}=={next(iter(versions))}" for name, versions in sorted(locked.items())
+                  if len(versions) == 1 and not name.startswith(("nvidia", "triton", "nano-vllm", "flash"))]
+          open("cpu-constraints.txt", "w").write("\n".join(pins) + "\n")
+          for dep in keep:
+              subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-c", "cpu-constraints.txt", dep], capture_output=True)
+          INSTALL
+          python -m pip install -q --no-deps -e . 2>&1 | tail -3
+      - name: Generate the genre score
+        run: python scripts/generate_music.py "$RUNNER_TEMP/acestep" "$GENRE" "$MUSIC_SECONDS" work/music-generated/score.wav
+      - name: Package the score
+        run: if [ -f work/music-generated/score.wav ]; then tar -czf warm-music.tgz work/music-generated; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warm-music
+          path: warm-music.tgz
+          if-no-files-found: ignore
+          retention-days: 1
+
+  script:
+    needs: [prepare, plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJson(needs.prepare.outputs.script_parts) }}
+    env:
+      VIDEO_TITLE: ${{ inputs.title }}
+      VIDEO_BRIEF: ${{ inputs.description }}
+      MOVIE_LIST: ${{ inputs.movies }}
+      VIDEO_TYPE: ${{ inputs.content_type }}
+      NARRATOR: ${{ inputs.narrator }}
+      TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      TTS_MODEL: ${{ inputs.tts_model || 'original' }}
+      SCRIPT_MODEL: gemma4:12b
+      TRY_4K: "${{ inputs.try_4k }}"
+      VIDEO_MINUTES: "${{ inputs.duration_minutes }}"
+      OLLAMA_HOST: 127.0.0.1:11435
+      OLLAMA_URL: http://127.0.0.1:11435
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_FLASH_ATTENTION: '1'
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama-models
+      PYTHONUNBUFFERED: '1'
+      PIPELINE_PART: ${{ matrix.part }}
+      # Each section's narration is also recorded here, in parallel; the final job reuses it.
+      VOICE_WARM: ${{ vars.VOICE_WARM || 'true' }}
+      HF_HUB_DISABLE_XET: '1'
+      HF_HOME: ${{ github.workspace }}/work/models/huggingface
+      TORCH_HOME: ${{ github.workspace }}/work/models/torch
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare disk before model tools and caches
+        run: python3 -m scripts.runner_disk --stage script
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: System dependencies
+        timeout-minutes: 35
+        run: bash scripts/install_system_packages.sh ffmpeg zstd
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          bash scripts/run_logged.sh "Dependency install" python -m pip install -e .
+      - name: Restore voice model cache
+        if: env.VOICE_WARM == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: work/models
+          key: models-cpu-v3-thumbnails-${{ runner.os }}-${{ env.TTS_MODEL }}-${{ env.SCRIPT_MODEL }}
+          restore-keys: models-cpu-v2-${{ runner.os }}-${{ env.TTS_MODEL }}-${{ env.SCRIPT_MODEL }}
+      - name: Keep script-model space before optional voice setup
+        if: env.VOICE_WARM == 'true'
+        run: python3 -m scripts.runner_disk --stage voice-warm --optional-voice
+      - name: Install the voice model
+        if: env.VOICE_WARM == 'true'
+        continue-on-error: true
+        run: |
+          python -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[voice]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: warm-prepare
+      - run: tar -xzf warm-prepare.tgz && rm warm-prepare.tgz
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: warm-plan
+      - run: if [ -f warm-plan.tgz ]; then tar -xzf warm-plan.tgz && rm warm-plan.tgz; fi
+      - name: Prepare local script model
+        run: bash scripts/bootstrap_ollama.sh
+      - name: Write and fact-check one section
+        run: bash scripts/run_logged.sh "Script section" python -m movie_pipeline.cli --stage script
+      - name: Package the section
+        run: tar -czf "warm-script-$PIPELINE_PART.tgz" work/jobs/*/script-sections $(ls -d work/jobs/*/speech 2>/dev/null)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warm-script-${{ matrix.part }}
+          path: warm-script-*.tgz
+          retention-days: 1
+
+  footage:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        part: ${{ fromJson(needs.prepare.outputs.footage_parts) }}
+    env:
+      VIDEO_TITLE: ${{ inputs.title }}
+      VIDEO_BRIEF: ${{ inputs.description }}
+      MOVIE_LIST: ${{ inputs.movies }}
+      VIDEO_TYPE: ${{ inputs.content_type }}
+      NARRATOR: ${{ inputs.narrator }}
+      TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      TTS_MODEL: ${{ inputs.tts_model || 'original' }}
+      SCRIPT_MODEL: gemma4:12b
+      TRY_4K: "${{ inputs.try_4k }}"
+      VIDEO_MINUTES: "${{ inputs.duration_minutes }}"
+      OLLAMA_HOST: 127.0.0.1:11435
+      OLLAMA_URL: http://127.0.0.1:11435
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_FLASH_ATTENTION: '1'
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama-models
+      PYTHONUNBUFFERED: '1'
+      PIPELINE_PART: ${{ matrix.part }}
+      SCENE_DESCRIPTIONS: 'true'
+      SCENE_BUDGET_SECONDS: '420'
+      SCENE_SAMPLE_FRAMES: '6'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare disk before model tools and caches
+        run: python3 -m scripts.runner_disk --stage footage
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: System dependencies
+        timeout-minutes: 35
+        run: bash scripts/install_system_packages.sh ffmpeg tesseract-ocr zstd
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          bash scripts/run_logged.sh "Dependency install" python -m pip install -e .
+      - uses: actions/download-artifact@v4
+        with:
+          name: warm-prepare
+      - run: tar -xzf warm-prepare.tgz && rm warm-prepare.tgz
+      - name: Restore shot analyses from earlier runs
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: work/analysis-cache
+          key: shot-analysis-v1-${{ github.run_id }}
+          restore-keys: shot-analysis-v1-
+      - name: Configure optional YouTube authentication
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: python -m scripts.prepare_cookies
+      - name: Start YouTube proof-of-origin token provider
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare optional WARP fallback route for trailer downloads
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/warp_proxy.sh
+      - name: Start local Ollama for scene descriptions
+        run: bash scripts/bootstrap_ollama.sh --serve-only
+      - name: Download and analyse one title's trailer
+        run: bash scripts/run_logged.sh "Footage" python -m movie_pipeline.cli --stage footage
+      - name: Package the footage
+        run: tar -czf "warm-footage-$PIPELINE_PART.tgz" work/footage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warm-footage-${{ matrix.part }}
+          path: warm-footage-*.tgz
+          retention-days: 1
+      - name: Remove temporary YouTube cookies
+        if: always()
+        run: rm -f "$RUNNER_TEMP/youtube-cookies.txt"
+
+  produce:
+    needs: [prepare, plan, script, footage, music]
+    # Runs even if some warm-up jobs failed; it does any missing work itself.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      VIDEO_TITLE: ${{ inputs.title }}
+      VIDEO_BRIEF: ${{ inputs.description }}
+      MOVIE_LIST: ${{ inputs.movies }}
+      VIDEO_TYPE: ${{ inputs.content_type }}
+      NARRATOR: ${{ inputs.narrator }}
+      TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+      # The per-run selection is shared with every warm-up; repository variables cannot change it.
+      TTS_MODEL: ${{ inputs.tts_model || 'original' }}
+      SCRIPT_MODEL: gemma4:12b
+      TRY_4K: "${{ inputs.try_4k }}"
+      VIDEO_MINUTES: "${{ inputs.duration_minutes }}"
+      THUMBNAIL_AI: 'true'
+      # 'stills' (default): official TMDB stills with face-aware framing; 'ai': the generated-scene designs.
+      THUMBNAIL_SOURCE: ${{ vars.THUMBNAIL_SOURCE || 'stills' }}
+      # 'none' (default): text-free thumbnails; 'minimal': a 2-3 word label on the panels option.
+      THUMBNAIL_TEXT: ${{ vars.THUMBNAIL_TEXT || 'none' }}
+      # Optional second, augmented video (doubles final encode time). Set repository variable COMPARISON_EXPORT=true to enable.
+      COMPARISON_EXPORT: ${{ vars.COMPARISON_EXPORT || 'false' }}
+      U2NET_HOME: ${{ github.workspace }}/work/models/rembg
+      OLLAMA_HOST: 127.0.0.1:11435
+      OLLAMA_URL: http://127.0.0.1:11435
+      # Keep the 12B script model within the runner's 16 GB: one model, one request, compressed KV cache.
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_FLASH_ATTENTION: '1'
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      HF_HUB_DISABLE_XET: '1'
+      HF_HOME: ${{ github.workspace }}/work/models/huggingface
+      TORCH_HOME: ${{ github.workspace }}/work/models/torch
+      SPEECH_VERIFY_MODEL_DIR: ${{ github.workspace }}/work/speech-verifier-model
+      # Pulled fresh each run (about 40 seconds); too large for the shared 10 GB Actions cache.
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama-models
+      TOKENIZERS_PARALLELISM: 'false'
+      OMP_NUM_THREADS: '4'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare disk before model tools and caches
+        run: python3 -m scripts.runner_disk --stage produce
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Add swap space as a memory safety margin
+        continue-on-error: true
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/swapfile && sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile && sudo swapon /mnt/swapfile
+          free -h
+      - name: System dependencies
+        timeout-minutes: 35
+        run: bash scripts/install_system_packages.sh ffmpeg libsndfile1 fonts-dejavu-core zstd tesseract-ocr
+      - name: Install light dependencies and validate inputs
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m scripts.preflight
+      - name: Restore shot analyses from earlier runs
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: work/analysis-cache
+          key: shot-analysis-v1-${{ github.run_id }}
+          restore-keys: shot-analysis-v1-
+      - name: Configure optional YouTube authentication
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: python -m scripts.prepare_cookies
+      - name: Start YouTube proof-of-origin token provider
+        # The bgutil plugin (installed with the package) asks this local server for PO tokens.
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare optional WARP fallback route for trailer downloads
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/warp_proxy.sh
+      - name: Restore model cache
+        uses: actions/cache@v4
+        with:
+          path: work/models
+          key: models-cpu-v3-thumbnails-${{ runner.os }}-${{ env.TTS_MODEL }}-${{ env.SCRIPT_MODEL }}
+          restore-keys: models-cpu-v2-${{ runner.os }}-${{ env.TTS_MODEL }}-${{ env.SCRIPT_MODEL }}
+      - name: Restore speech and script checkpoints
+        uses: actions/cache/restore@v4
+        with:
+          path: work/jobs
+          key: production-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            production-v2-${{ github.run_id }}-
+            production-v2-
+      - name: Restore optional speech recognizer
+        id: speech-verifier-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: work/speech-verifier-model
+          key: models-cpu-speech-verifier-v1-${{ runner.os }}
+      - name: Install CPU speech model and analysis dependencies
+        run: |
+          python -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[voice,thumbnails]'
+          # Demucs (dialogue separation) pins an old torchaudio; install it without dependencies
+          # plus the light libraries it imports, so Chatterbox's torch stack is left untouched.
+          python -m pip install --no-deps demucs==4.0.1 openunmix==1.3.0
+          python -m pip install dora-search julius einops omegaconf tqdm pyyaml
+          # SigLIP 2 shot matching through OpenCLIP (Chatterbox pins a transformers version without
+          # SigLIP 2). torchvision matches the pinned torch; the rest install without dependencies.
+          python -m pip install torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --no-deps open_clip_torch==2.32.0 timm==1.0.15
+          python -m pip install ftfy regex
+      - name: Prepare local script model
+        run: bash scripts/bootstrap_ollama.sh
+      - name: Collect warm-up results
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: warm-*
+          path: warm-results
+          merge-multiple: true
+      - name: Unpack warm-up results
+        continue-on-error: true
+        run: |
+          shopt -s nullglob
+          for archive in warm-results/*.tgz; do tar -xzf "$archive"; done
+          rm -rf warm-results
+          echo "Warm-up archives unpacked: $(ls work/footage 2>/dev/null | grep -c '\.mp4$' || true) trailers ready."
+      - name: Produce the complete package
+        run: bash scripts/run_logged.sh "Production" python -m movie_pipeline.cli
+      - name: Render review frames from the finished video
+        continue-on-error: true
+        run: python -m scripts.review_package
+      - name: Downloadable video package
+        uses: actions/upload-artifact@v4
+        with:
+          name: movie-video-${{ github.run_number }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 2
+      - name: Bounded audio inspection samples
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-inspection-${{ github.run_number }}
+          path: |
+            work/jobs/*/voice-dry.wav
+            work/jobs/*/voice-before-pacing.wav
+            work/jobs/*/voice-after-pacing.wav
+            work/jobs/*/finished-mix.wav
+            work/jobs/*/ending-music-only.wav
+            work/jobs/*/background-only.wav
+            work/jobs/*/edit-without-music.wav
+            work/jobs/*/soundtrack-report.json
+            work/jobs/*/audio-review.json
+            work/jobs/*/comparison-audio-review.json
+            work/jobs/*/comparison/augmentation-report.json
+          if-no-files-found: ignore
+          retention-days: 2
+      - name: Telegram completion reminder
+        if: success()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m movie_pipeline.telegram
+      - name: Speech diagnostics if production fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: speech-diagnostics-${{ github.run_number }}
+          path: |
+            work/jobs/*/speech-checks/speech-verification.json
+            work/jobs/*/speech-checks/last-unverified.wav
+            work/jobs/*/audio-assembly.json
+            work/jobs/*/audio-review.json
+            work/jobs/*/comparison-audio-review.json
+          if-no-files-found: ignore
+          retention-days: 2
+      - name: Remove downloaded trailers and rendered intermediates
+        if: always()
+        run: python -m scripts.cleanup_work
+      - name: Save bounded speech and script checkpoints
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: work/jobs
+          key: production-v2-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Remove temporary YouTube cookies
+        if: always()
+        run: rm -f "$RUNNER_TEMP/youtube-cookies.txt"
+      - name: Save shot analyses for later runs
+        if: always() && !cancelled() && hashFiles('work/analysis-cache/*.json') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: work/analysis-cache
+          key: shot-analysis-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save optional speech recognizer when downloaded
+        if: always() && !cancelled() && steps.speech-verifier-cache.outputs.cache-hit != 'true' && hashFiles('work/speech-verifier-model/**/config.json') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: work/speech-verifier-model
+          key: models-cpu-speech-verifier-v1-${{ runner.os }}
