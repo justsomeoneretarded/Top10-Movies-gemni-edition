@@ -51,7 +51,7 @@ class _Budget:
     video_seconds: float = 0.0
     next_request: float = 0.0
     blocked: str = ""
-    blocked_models: set = field(default_factory=set)
+    blocked_models: dict = field(default_factory=dict)
 
 
 _BUDGET = _Budget()
@@ -330,7 +330,7 @@ class GeminiClient:
         timeout = (10, _number("GEMINI_TIMEOUT_SECONDS", 120, 10, 180))
         with _BUDGET.lock:
             if _BUDGET.blocked or model in _BUDGET.blocked_models:
-                raise _unavailable(_BUDGET.blocked or "model_unavailable")
+                raise _unavailable(_BUDGET.blocked or _BUDGET.blocked_models[model])
             for attempt in range(retries + 1):
                 if _BUDGET.requests >= int(_number("GEMINI_MAX_REQUESTS", 120, 1, 1000)):
                     _BUDGET.blocked = "request_budget_exhausted"
@@ -378,11 +378,11 @@ class GeminiClient:
                     _BUDGET.blocked = "authentication_or_access_unavailable"
                     raise _unavailable(_BUDGET.blocked)
                 if status == 404:
-                    _BUDGET.blocked_models.add(model)
+                    _BUDGET.blocked_models[model] = "model_unavailable"
                     raise _unavailable("model_unavailable")
                 if status == 429 and _permanent_quota(data):
-                    _BUDGET.blocked = "quota_exhausted"
-                    raise _unavailable(_BUDGET.blocked)
+                    _BUDGET.blocked_models[model] = "quota_exhausted"
+                    raise _unavailable("quota_exhausted")
                 transient = status in (429, 500, 502, 503, 504)
                 error_text = json.dumps(data).lower()[:60000]
                 if any(word in error_text for word in ("consent", "voice_mismatch", "voice not found")):
@@ -393,8 +393,9 @@ class GeminiClient:
                         time.sleep(delay)
                         continue
                 if transient:
-                    _BUDGET.blocked = "quota_exhausted" if status == 429 else "service_unavailable"
-                    raise _unavailable(_BUDGET.blocked)
+                    reason = "quota_exhausted" if status == 429 else "service_unavailable"
+                    _BUDGET.blocked_models[model] = reason
+                    raise _unavailable(reason)
                 raise _unavailable("request_rejected")
 
     def generate_json(self, prompt, schema, *, model=None, max_output_tokens=8192,

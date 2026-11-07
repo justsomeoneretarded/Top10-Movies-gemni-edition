@@ -286,7 +286,7 @@ def test_zero_quota_does_not_retry_and_circuits(monkeypatch):
     with pytest.raises(gemini.GeminiUnavailable, match="quota_exhausted"):
         provider.generate_json("Example", SCHEMA)
     with pytest.raises(gemini.GeminiUnavailable, match="quota_exhausted"):
-        provider.grounded_text("Research")
+        provider.generate_json("Example again", SCHEMA)
     assert len(session.calls) == 1
 
 
@@ -347,3 +347,21 @@ def test_usage_log_is_bounded_and_cannot_break_fallback(monkeypatch, tmp_path):
     assert path.stat().st_size == 4096
     monkeypatch.setenv("GEMINI_USAGE_REPORT", str(tmp_path))
     gemini.record_event("test", "gemini", "fallback")  # directory is harmless
+
+
+@pytest.mark.parametrize("status,body,reason", [
+    (429, {"error": {"details": [{"quotaValue": 0}]}}, "quota_exhausted"),
+    (503, {"error": {"status": "UNAVAILABLE"}}, "service_unavailable"),
+])
+def test_research_model_circuit_does_not_disable_independent_text_model(status, body, reason):
+    provider, session = client(Response(body, status), Response(answer()))
+    with pytest.raises(gemini.GeminiUnavailable, match=reason):
+        provider.grounded_text("Research the verified film")
+    # Repeating this model is suppressed, preserving requests for other models.
+    with pytest.raises(gemini.GeminiUnavailable, match=reason):
+        provider.grounded_text("Research another film")
+    assert provider.generate_json("Write from already verified facts", SCHEMA) == {"answer": "ok"}
+    assert [url.split("/")[-1] for url, _ in session.calls] == [
+        "gemini-2.5-flash:generateContent", "gemini-3.8-flash:generateContent"]
+    assert gemini._BUDGET.blocked == ""
+    assert gemini._BUDGET.blocked_models["gemini-2.5-flash"] == reason
