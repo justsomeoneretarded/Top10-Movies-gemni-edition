@@ -123,6 +123,10 @@ def record_event(stage, backend, status, reason="", details=None):
         for key, value in details.items():
             if key == "model" and isinstance(value, str) and value in FREE_MODELS:
                 safe["model"] = value
+            elif (key == "error_class" and isinstance(value, str)
+                  and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value)
+                  and value == _redact(value)):
+                safe["error_class"] = value
             elif (isinstance(key, str) and re.fullmatch(r"[a-z_]{1,40}", key)
                   and isinstance(value, (int, float, bool))
                   and abs(value) <= 1e12 and math.isfinite(value)):
@@ -343,16 +347,28 @@ class GeminiClient:
                 _BUDGET.requests += 1
                 _BUDGET.video_seconds += video_seconds
                 _BUDGET.next_request = time.monotonic() + _number("GEMINI_MIN_INTERVAL_SECONDS", 6, 0, 30)
+                started = time.monotonic()
                 try:
                     response = self.session.post(
                         _ENDPOINT + "/" + model + ":generateContent",
                         headers={"x-goog-api-key": self._api_key, "Content-Type": "application/json"},
                         json=payload, timeout=timeout,
                     )
-                except requests.RequestException:
+                except requests.RequestException as error:
+                    # Exception messages can contain credentials and request URLs.
+                    # Log only the Python class, model and numeric diagnostics.
+                    record_event(stage, "gemini", "request_failed", "transport_error", details={
+                        "model": model, "error_class": type(error).__name__,
+                        "attempt": attempt + 1, "request_count": _BUDGET.requests,
+                        "elapsed_ms": round((time.monotonic() - started) * 1000),
+                    })
                     if attempt < retries:
                         time.sleep(min(2 ** attempt, 30))
                         continue
+                    if isinstance(error, requests.ReadTimeout):
+                        # A slow model is not evidence that other models are offline.
+                        _BUDGET.blocked_models[model] = "model_read_timeout"
+                        raise _unavailable("model_read_timeout") from None
                     _BUDGET.blocked = "transport_unavailable"
                     raise _unavailable(_BUDGET.blocked) from None
                 try:
@@ -374,6 +390,11 @@ class GeminiClient:
                                 details[target] = usage[source]
                     record_event(stage, "gemini", "received", details=details)
                     return data
+                record_event(stage, "gemini", "request_failed", "http_error", details={
+                    "model": model, "http_status": status, "attempt": attempt + 1,
+                    "request_count": _BUDGET.requests,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                })
                 if status in (401, 403):
                     _BUDGET.blocked = "authentication_or_access_unavailable"
                     raise _unavailable(_BUDGET.blocked)
@@ -439,10 +460,11 @@ class GeminiClient:
         try:
             data = self._request(model, payload, stage, video_seconds)
         except GeminiUnavailable as error:
-            if str(error) != "model_unavailable" or model != "gemini-3.8-flash":
+            fallback_reason = str(error)
+            if fallback_reason not in {"model_unavailable", "model_read_timeout"} or model != "gemini-3.8-flash":
                 raise
-            # Only an unavailable model triggers this documented free alternative.
-            # Authentication, quota, blocked content and transport errors never do.
+            # An unavailable or persistently slow primary model may use this free
+            # alternative. Auth, quota, blocked content and connection errors do not.
             config["thinkingConfig"] = {"thinkingBudget": 512}
             model = "gemini-2.5-flash"
             data = self._request(model, payload, stage, video_seconds)
@@ -451,8 +473,9 @@ class GeminiClient:
                 self.text_model = self.model = model
             if self.vision_model == "gemini-3.8-flash":
                 self.vision_model = model
-            record_event(stage, "gemini", "model_fallback", "preferred_model_unavailable",
-                         details={"model": model})
+            record_event(stage, "gemini", "model_fallback",
+                         "preferred_model_read_timeout" if fallback_reason == "model_read_timeout"
+                         else "preferred_model_unavailable", details={"model": model})
         text = _text(_candidate(data))
         try:
             value = json.loads(text, parse_constant=_reject_constant)

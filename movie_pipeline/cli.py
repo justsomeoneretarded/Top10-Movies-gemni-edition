@@ -54,7 +54,7 @@ def ai_configuration() -> dict:
     return configuration
 
 
-def write_ai_report(output: Path, films: list[dict]):
+def write_ai_report(output: Path, films: list[dict], *, voice_route: dict | None = None):
     """Keep actual cloud/fallback events and research provenance with the deliverable."""
     from collections import Counter
     events = []
@@ -71,7 +71,7 @@ def write_ai_report(output: Path, films: list[dict]):
             continue
     counts = Counter((str(e.get("stage", "unknown")), str(e.get("backend", "unknown")),
                       str(e.get("status", "unknown"))) for e in events)
-    report = {"configured": ai_configuration(),
+    report = {"configured": ai_configuration(), "narration": voice_route or {},
               "events": events[-4000:],
               "counts": [{"stage": stage, "backend": backend, "status": status, "count": count}
                          for (stage, backend, status), count in sorted(counts.items())],
@@ -1151,13 +1151,16 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     write_srt(output / "subtitles.srt", all_cues)
     for chapter in chapters:
         chapter["start"] /= speed
+    from .gemini_voice import route_summary
+    voice_route = route_summary(reference, work / "speech")
     save_json(output / "run-manifest.json", {"channel":"MOVIE RANKS", "commit":os.getenv("GITHUB_SHA","local"),
               "genre":genre, "requested_minutes":spec.target/60, "actual_minutes":final_duration/60,
               "native_scenes_rendered":sum(e.get("type")=="trailer-audio" and e.get("native_verified",False) for e in timeline),
               "review_previews":sum(e.get("type")=="review-preview" for e in timeline),
               "rank_announcements":sum(bool(e.get("rank_announcement")) for e in timeline),
               "accepted_sources":[{"title":film["title"],"sources":[str(p) for p in pool]} for film,pool in zip(films,pools)],
-              "voice_model":selected_tts_model(),"narrator":narrator,"ai_configuration":ai_configuration()})
+              "voice_model":voice_route.get("model", selected_tts_model()),"voice_backend":voice_route.get("backend", "local"),
+              "fallback_voice_model":selected_tts_model(),"narrator":narrator,"ai_configuration":ai_configuration()})
     package = script["package"]
     (output / "recommended-title.txt").write_text(package["title"].strip() + "\n")
     write_upload_extras(output, package, films)
@@ -1220,7 +1223,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     notice("Complete", f"{final_duration/60:.2f} min video at tempo {speed:.3f}; loudness before mastering "
            f"{loudness.get('measured', {}).get('integrated', '?')} LUFS, gain {loudness.get('gain_db', '?')} dB; "
            f"{assembly.get('effect_events', 0)} transition effects. Total {(time.time()-started)/60:.0f} min.")
-    write_ai_report(output, films)
+    write_ai_report(output, films, voice_route=voice_route)
     print(f"Complete: {final_duration/60:.2f} minutes. Package: {output}", flush=True)
 
 

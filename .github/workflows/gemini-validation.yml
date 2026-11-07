@@ -27,7 +27,7 @@ jobs:
       GEMINI_MAX_REQUESTS: '8'
       GEMINI_MAX_RETRIES: '0'
       GEMINI_MIN_INTERVAL_SECONDS: '8'
-      GEMINI_TIMEOUT_SECONDS: '90'
+      GEMINI_TIMEOUT_SECONDS: '120'
       GEMINI_USAGE_REPORT: gemini-validation/usage.jsonl
       GEMINI_PREFLIGHT_REPORT: gemini-validation/capabilities.json
     steps:

@@ -365,3 +365,46 @@ def test_research_model_circuit_does_not_disable_independent_text_model(status, 
         "gemini-2.5-flash:generateContent", "gemini-3.8-flash:generateContent"]
     assert gemini._BUDGET.blocked == ""
     assert gemini._BUDGET.blocked_models["gemini-2.5-flash"] == reason
+
+
+def test_slow_primary_model_falls_back_without_disabling_grounded_research(tmp_path):
+    provider, session = client(
+        requests.ReadTimeout("private URL and test-gemini-secret must stay private"),
+        Response(answer()), Response(answer("A pilot returns.")))
+    configured_identity = gemini.identity()
+    assert provider.generate_json("Write from verified facts", SCHEMA) == {"answer": "ok"}
+    assert provider.text_model == provider.vision_model == "gemini-2.5-flash"
+    assert gemini.identity() == configured_identity
+    assert provider.grounded_text("Research the next film")["text"] == "A pilot returns."
+    assert [url.split("/")[-1] for url, _ in session.calls] == [
+        "gemini-3.8-flash:generateContent", "gemini-2.5-flash:generateContent",
+        "gemini-2.5-flash:generateContent"]
+    assert gemini._BUDGET.blocked == ""
+    assert gemini._BUDGET.blocked_models["gemini-3.8-flash"] == "model_read_timeout"
+    logs = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    diagnostic = next(row for row in logs if row.get("details", {}).get("error_class"))
+    assert diagnostic["details"]["error_class"] == "ReadTimeout"
+    assert diagnostic["details"]["model"] == "gemini-3.8-flash"
+    assert diagnostic["details"]["elapsed_ms"] >= 0
+    assert "test-gemini-secret" not in json.dumps(logs)
+    assert "private URL" not in json.dumps(logs)
+
+
+def test_read_timeout_retry_and_fallback_respect_total_request_budget(monkeypatch):
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "2")
+    monkeypatch.setenv("GEMINI_MAX_REQUESTS", "1")
+    monkeypatch.setattr(gemini.time, "sleep", lambda seconds: None)
+    provider, session = client(requests.ReadTimeout("private response body"))
+    with pytest.raises(gemini.GeminiUnavailable, match="request_budget_exhausted"):
+        provider.generate_json("Example", SCHEMA)
+    assert len(session.calls) == 1 and gemini._BUDGET.requests == 1
+
+
+def test_http_failures_record_status_without_server_body(tmp_path):
+    provider, _ = client(Response({"error": {"message": "private response test-gemini-secret"}}, 400))
+    with pytest.raises(gemini.GeminiUnavailable, match="request_rejected"):
+        provider.generate_json("Example", SCHEMA)
+    rows = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    diagnostic = next(row for row in rows if row["reason"] == "http_error")
+    assert diagnostic["details"]["http_status"] == 400
+    assert "private response" not in json.dumps(rows) and "test-gemini-secret" not in json.dumps(rows)

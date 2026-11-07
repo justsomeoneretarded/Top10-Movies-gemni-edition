@@ -25,7 +25,7 @@ def main():
             raise ValueError("Unexpected text contract")
         report["checks"]["structured_text"] = {"status": "passed", "model": client.text_model}
     except Exception as exc:
-        report["checks"]["structured_text"] = {"status": "failed", "reason": type(exc).__name__}
+        report["checks"]["structured_text"] = {"status": "failed", "reason": type(exc).__name__ + ": " + gemini._redact(str(exc))[:180]}
         errors.append("structured_text")
     try:
         from PIL import Image, ImageDraw
@@ -40,7 +40,7 @@ def main():
         report["checks"]["image_understanding"] = {"status": "passed", "model": client.vision_model,
                                                    "description": observed["description"][:300]}
     except Exception as exc:
-        report["checks"]["image_understanding"] = {"status": "failed", "reason": type(exc).__name__}
+        report["checks"]["image_understanding"] = {"status": "failed", "reason": type(exc).__name__ + ": " + gemini._redact(str(exc))[:180]}
         errors.append("image_understanding")
     try:
         saved = os.environ.pop("TMDB_READ_TOKEN", None)
@@ -64,7 +64,7 @@ def main():
             "source_count": len(films[0]["research_sources"])}
     except Exception as exc:
         report["checks"]["grounded_research_without_tmdb"] = {
-            "status": "failed", "reason": type(exc).__name__}
+            "status": "failed", "reason": type(exc).__name__ + ": " + gemini._redact(str(exc))[:180]}
         errors.append("grounded_research_without_tmdb")
     report["checks"]["custom_voice"] = {
         "status": "not_generated",
@@ -72,8 +72,18 @@ def main():
     report["checks"]["youtube"] = {
         "status": "production_validation_required",
         "reason": "Production analyzes actual accepted public footage. API understanding does not download media."}
+    usage = Path(os.getenv("GEMINI_USAGE_REPORT", "work/gemini-usage.jsonl"))
+    if usage.exists():
+        events = []
+        for line in usage.read_text().splitlines()[-40:]:
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+        report["provider_events"] = events
     report["passed"] = not errors
     (root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print("Gemini live report: " + json.dumps(report, sort_keys=True))
     print(json.dumps({"passed": report["passed"], "failed_checks": errors,
                       "models": {"text": client.text_model, "vision": client.vision_model}}, sort_keys=True))
     return int(bool(errors))
