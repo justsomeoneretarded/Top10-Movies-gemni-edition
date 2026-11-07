@@ -317,31 +317,38 @@ def test_legacy_google_search_failure_can_use_public_context(public_provider, mo
     assert gemini_research.research_film(ITEM, "movie")["research_method"] == "public_source_context"
 
 
+def _wiki_response(payload, status=200):
+    return Mock(status_code=status, raise_for_status=Mock(), json=Mock(return_value=payload))
+
+
 def test_public_source_retrieval_uses_returned_url_aliases_and_no_auth(monkeypatch):
     from movie_pipeline import public_research
     search = {"query": {"search": [{"title": "Lioness (American TV series)"}]}}
     lead = ("Lioness (also known as Special Ops: Lioness) is an American television series. "
             "It premiered on July 23, 2023. A CIA officer leads a dangerous undercover operation.")
-    pages = {"query": {"redirects": [{"from": "Special Ops: Lioness", "to": "Lioness (American TV series)"}],
-                       "pages": [{"pageid": 1, "ns": 0, "title": "Lioness (American TV series)",
-                                  "extract": lead, "fullurl": "https://en.wikipedia.org/wiki/Lioness_(TV_series)"}]}}
-    get = Mock(side_effect=[Mock(raise_for_status=Mock(), json=Mock(return_value=search)),
-                            Mock(raise_for_status=Mock(), json=Mock(return_value=pages))])
+    page = {"pageid": 1, "ns": 0, "title": "Lioness (American TV series)",
+            "fullurl": "https://en.wikipedia.org/wiki/Lioness_(TV_series)"}
+    metadata = {"query": {"redirects": [{"from": "Special Ops: Lioness", "to": "Lioness (American TV series)"}],
+                          "pages": [page]}}
+    extracted = {"query": {"pages": [{**page, "extract": lead}]}}
+    get = Mock(side_effect=[_wiki_response(search), _wiki_response(metadata), _wiki_response(extracted)])
     monkeypatch.setattr(public_research.requests, "get", get)
+    monkeypatch.setattr(public_research, "record_event", Mock())
     source = public_research.collect_public_sources(FilmInput("Special Ops: Lioness", 2023), "tv")[0]
-    assert source["url"] == pages["query"]["pages"][0]["fullurl"]
+    assert source["url"] == page["fullurl"]
     assert "Special Ops: Lioness" in source["aliases"]
-    assert get.call_count == 2
+    assert get.call_count == 3
     for call in get.call_args_list:
         assert "Authorization" not in call.kwargs["headers"]
         assert call.kwargs["allow_redirects"] is False
-    assert len(get.call_args_list[-1].kwargs["params"]["titles"].split("|")) <= 5
+    assert len(get.call_args_list[1].kwargs["params"]["titles"].split("|")) <= 5
+    assert get.call_args_list[-1].kwargs["params"]["pageids"] == "1"
 
 
 @pytest.mark.parametrize("case", ["html", "missing-url", "wrong-title", "disambiguation"])
 def test_public_source_retrieval_rejects_error_or_wrong_pages(monkeypatch, case):
     from movie_pipeline import public_research
-    page = {"title": "Arrival (2016 film)", "ns": 0, "extract": IDENTITY + " " + PREMISE,
+    page = {"pageid": 1, "title": "Arrival (2016 film)", "ns": 0, "extract": IDENTITY + " " + PREMISE,
             "fullurl": "https://en.wikipedia.org/wiki/Arrival_(film)"}
     if case == "html":
         page["extract"] = "<html><body>Gateway error. " + IDENTITY + PREMISE + "</body></html>"
@@ -352,9 +359,11 @@ def test_public_source_retrieval_rejects_error_or_wrong_pages(monkeypatch, case)
     else:
         page["pageprops"] = {"disambiguation": ""}
     get = Mock(side_effect=[
-        Mock(raise_for_status=Mock(), json=Mock(return_value={"query": {"search": []}})),
-        Mock(raise_for_status=Mock(), json=Mock(return_value={"query": {"pages": [page]}}))])
+        _wiki_response({"query": {"search": []}}),
+        _wiki_response({"query": {"pages": [page]}}),
+        _wiki_response({"query": {"pages": [page]}})])
     monkeypatch.setattr(public_research.requests, "get", get)
+    monkeypatch.setattr(public_research, "record_event", Mock())
     with pytest.raises(GeminiUnavailable):
         public_research.collect_public_sources(ITEM, "movie")
 
@@ -456,3 +465,88 @@ def test_superhero_and_comic_book_are_allowed_as_actual_film_genres():
     assert gemini_research._work_definition(public_page("Iron Man (2008 film)", lead), "movie")
     lead = "Example is a 2026 American comic book film directed by an independent filmmaker."
     assert gemini_research._work_definition(public_page("Example (2026 film)", lead), "movie")
+
+
+
+def test_single_page_extract_avoids_real_mediawiki_batch_limit_and_disambiguation(monkeypatch):
+    from movie_pipeline import public_research
+    old = {"pageid": 1, "ns": 0, "title": "Havoc (2005 film)",
+           "fullurl": "https://en.wikipedia.org/wiki/Havoc_(2005_film)"}
+    disambiguation = {"pageid": 2, "ns": 0, "title": "Havoc", "pageprops": {"disambiguation": ""},
+                      "fullurl": "https://en.wikipedia.org/wiki/Havoc",
+                      "extract": "Havoc may refer to various unrelated people, places and films."}
+    wanted = {"pageid": 3, "ns": 0, "title": "Havoc (2025 film)",
+              "fullurl": "https://en.wikipedia.org/wiki/Havoc_(2025_film)"}
+    lead = "Havoc is a 2025 action thriller film written and directed by Gareth Evans."
+    premise = "A detective must navigate a dangerous criminal underworld to rescue a politician's estranged son."
+    # Real whole-article batching returns a continuation and only the first
+    # unsupported/disambiguation extract. Metadata-first retrieval must ignore it
+    # and request the exact eligible page ID on its own.
+    metadata = {"continue": {"excontinue": 1, "continue": "||info|pageprops"},
+                "warnings": {"extracts": {"warnings": "exlimit lowered to 1"}},
+                "query": {"pages": [old, disambiguation, wanted]}}
+    get = Mock(side_effect=[
+        _wiki_response({"query": {"search": [{"title": old["title"]}, {"title": wanted["title"]}]}}),
+        _wiki_response(metadata),
+        _wiki_response({"query": {"pages": [{**wanted, "extract": lead + "\n\n" + premise}]}})])
+    monkeypatch.setattr(public_research.requests, "get", get)
+    monkeypatch.setattr(public_research, "record_event", Mock())
+    sources = public_research.collect_public_sources(FilmInput("Havoc", 2025), "movie")
+    assert sources[0]["title"] == wanted["title"] and premise in sources[0]["text"]
+    assert get.call_count == 3
+    assert get.call_args_list[1].kwargs["params"]["prop"] == "info|pageprops"
+    assert get.call_args_list[2].kwargs["params"]["prop"] == "extracts"
+    assert get.call_args_list[2].kwargs["params"]["pageids"] == "3"
+    assert "titles" not in get.call_args_list[2].kwargs["params"]
+
+
+def test_good_public_context_survives_later_optional_extract_timeout(monkeypatch):
+    from movie_pipeline import public_research
+    import requests
+    first = {"pageid": 1, "title": "Arrival", "ns": 0,
+             "fullurl": "https://en.wikipedia.org/wiki/Arrival"}
+    other = {"pageid": 2, "title": "Arrival (2017 film)", "ns": 0,
+             "fullurl": "https://en.wikipedia.org/wiki/Arrival_(2017_film)"}
+    text = ("Arrival is an American science fiction film directed by Denis Villeneuve.\n\n"
+            + PREMISE + "\n\nThe film premiered in 2016 at an international film festival.")
+    get = Mock(side_effect=[
+        _wiki_response({"query": {"search": [{"title": other["title"]}]}}),
+        _wiki_response({"query": {"pages": [first, other]}}),
+        _wiki_response({"query": {"pages": [{**first, "extract": text}]}}),
+        requests.Timeout("private request details must not be logged")])
+    events = Mock()
+    monkeypatch.setattr(public_research.requests, "get", get)
+    monkeypatch.setattr(public_research, "record_event", events)
+    sources = public_research.collect_public_sources(ITEM, "movie")
+    assert len(sources) == 1 and sources[0]["text"] == text
+    assert "private request details" not in str(events.call_args_list)
+    assert "public_source_timeout" in str(events.call_args_list)
+
+
+def test_public_http_status_is_diagnostic_without_request_or_response_leaks(monkeypatch):
+    from movie_pipeline import public_research
+    events = Mock()
+    get = Mock(return_value=_wiki_response({"secret": "fake-private-token"}, status=403))
+    monkeypatch.setattr(public_research.requests, "get", get)
+    monkeypatch.setattr(public_research, "record_event", events)
+    with pytest.raises(GeminiUnavailable, match="public_source_http_403") as error:
+        public_research.collect_public_sources(ITEM, "movie")
+    assert str(error.value) == "public_source_http_403"
+    assert "fake-private-token" not in str(events.call_args_list)
+    assert events.call_args.kwargs["details"] == {"http_status": 403}
+
+
+@pytest.mark.parametrize("message,expected", [
+    ("public_source_http_403", "public_source_http_403"),
+    ("public_source_identity_not_found", "public_source_identity_not_found"),
+    ("fake-private-key in https://private.example/request", "unavailable-or-unverified")])
+def test_research_fallback_preserves_only_safe_fixed_reason_codes(provider, tmp_path, monkeypatch, message, expected):
+    monkeypatch.setattr(research_module, "research_film", Mock(side_effect=GeminiUnavailable(message)))
+    research = Research()
+    research.resolve = Mock(return_value={"title": "Arrival", "year": 2016, "kind": "movie",
+                                         "id": 329865, "overview": PREMISE})
+    research.collect([ITEM], tmp_path / "research.json")
+    calls = research_module.record_event.call_args_list
+    fallback = next(call for call in calls if call.args[:3] == ("research", "gemini", "fallback"))
+    assert fallback.kwargs["reason"] == expected
+    assert "fake-private-key" not in str(calls)
