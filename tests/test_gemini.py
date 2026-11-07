@@ -443,3 +443,24 @@ def test_modern_fallback_is_free_and_has_no_search_tool():
     payload = session.calls[0][1]["json"]
     assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
     assert "tools" not in payload
+
+
+@pytest.mark.parametrize("retries", [0, 1])
+def test_exhausted_primary_service_failure_uses_modern_free_fallback(monkeypatch, retries, tmp_path):
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", str(retries))
+    monkeypatch.setattr(gemini.time, "sleep", lambda seconds: None)
+    failures = [Response({"error": {"status": "UNAVAILABLE", "message": "private body"}}, 503)
+                for _ in range(retries + 1)]
+    provider, session = client(*failures, Response(answer()))
+    configured_identity = gemini.identity()
+    assert provider.generate_json("Write from verified facts", SCHEMA) == {"answer": "ok"}
+    assert [url.split("/")[-1] for url, _ in session.calls] == (
+        ["gemini-3.8-flash:generateContent"] * (retries + 1)
+        + ["gemini-3.5-flash-lite:generateContent"])
+    assert provider.text_model == provider.vision_model == "gemini-3.5-flash-lite"
+    assert gemini.identity() == configured_identity
+    assert gemini._BUDGET.blocked == ""
+    assert gemini._BUDGET.blocked_models["gemini-3.8-flash"] == "service_unavailable"
+    rows = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    assert any(row["reason"] == "preferred_model_service_unavailable" for row in rows)
+    assert "private body" not in json.dumps(rows)
