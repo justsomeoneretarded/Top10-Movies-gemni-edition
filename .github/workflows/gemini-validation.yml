@@ -26,7 +26,7 @@ jobs:
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
       GEMINI_MAX_REQUESTS: '8'
-      GEMINI_MAX_RETRIES: '0'
+      GEMINI_MAX_RETRIES: '1'
       GEMINI_MIN_INTERVAL_SECONDS: '8'
       GEMINI_TIMEOUT_SECONDS: '120'
       GEMINI_USAGE_REPORT: gemini-validation/usage.jsonl

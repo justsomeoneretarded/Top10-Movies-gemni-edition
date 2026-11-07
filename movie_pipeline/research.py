@@ -168,10 +168,13 @@ class Research:
                     kind = getattr(self, "selected_kind", None) or getattr(self, "preferred_kind", "movie")
                     film = research_film(item, kind)
                     record_event("research", "gemini", "success", details={"sources": len(film["research_sources"])})
-                except (GeminiUnavailable, requests.RequestException, ValueError, TypeError, KeyError):
+                except (GeminiUnavailable, requests.RequestException, ValueError, TypeError, KeyError) as error:
                     # Provider exceptions can contain credential-bearing request URLs.
                     # Log only a fixed reason, never the exception or response body.
-                    record_event("research", "gemini", "fallback", reason="unavailable-or-unverified")
+                    reason = "unavailable-or-unverified"
+                    if isinstance(error, GeminiUnavailable) and re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+){1,15}", str(error)):
+                        reason = str(error)
+                    record_event("research", "gemini", "fallback", reason=reason)
                     print("Gemini source research unavailable or unverified; trying verified TMDB research.", flush=True)
             if film is None:
                 film = self.resolve(item)

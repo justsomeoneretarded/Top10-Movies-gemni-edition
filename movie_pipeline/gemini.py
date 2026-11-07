@@ -465,10 +465,11 @@ class GeminiClient:
             data = self._request(model, payload, stage, video_seconds)
         except GeminiUnavailable as error:
             fallback_reason = str(error)
-            if fallback_reason not in {"model_unavailable", "model_read_timeout"} or model != "gemini-3.8-flash":
+            if fallback_reason not in {"model_unavailable", "model_read_timeout", "service_unavailable"} or model != "gemini-3.8-flash":
                 raise
-            # An unavailable or persistently slow primary model may use this free
-            # alternative. Auth, quota, blocked content and connection errors do not.
+            # Only unavailable, persistently slow or exhausted server failures may
+            # use this free alternative. Auth, quota, blocked content and connection
+            # errors never switch models.
             config["thinkingConfig"] = {"thinkingLevel": "low"}
             model = "gemini-3.5-flash-lite"
             data = self._request(model, payload, stage, video_seconds)
@@ -477,9 +478,13 @@ class GeminiClient:
                 self.text_model = self.model = model
             if self.vision_model == "gemini-3.8-flash":
                 self.vision_model = model
-            record_event(stage, "gemini", "model_fallback",
-                         "preferred_model_read_timeout" if fallback_reason == "model_read_timeout"
-                         else "preferred_model_unavailable", details={"model": model})
+            fallback_reasons = {
+                "model_unavailable": "preferred_model_unavailable",
+                "model_read_timeout": "preferred_model_read_timeout",
+                "service_unavailable": "preferred_model_service_unavailable",
+            }
+            record_event(stage, "gemini", "model_fallback", fallback_reasons[fallback_reason],
+                         details={"model": model})
         text = _text(_candidate(data))
         try:
             value = json.loads(text, parse_constant=_reject_constant)
