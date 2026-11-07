@@ -365,8 +365,37 @@ class GeminiNarrator:
             self.local = None
 
 
+def _requires_voice_guard(cache: Path) -> bool:
+    """Inspect backend state without opening or validating the reference file."""
+    cache_key = str(cache.resolve())
+    with _ROUTES_LOCK:
+        if any(identifier[0] == cache_key and route.state["backend"] == "gemini"
+               for identifier, route in _ROUTES.items()):
+            return True
+    for path in cache.glob("voice-backend-*.json"):
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+            if (not isinstance(state, dict) or state.get("version") != 1
+                    or state.get("backend") not in ("gemini", "local")
+                    or not isinstance(state.get("started"), bool)):
+                raise ValueError("Invalid route identity.")
+        except (OSError, ValueError) as exc:
+            raise PipelineError("Cannot read the episode voice backend checkpoint; "
+                                "restore it or start a fresh run directory.") from exc
+        if state["backend"] == "gemini":
+            return True
+    return False
+
+
 def create_narrator(reference: Path, cache: Path, local_factory, *,
-                    narrator: str | None = None) -> GeminiNarrator:
+                    narrator: str | None = None):
+    """Keep the original local object/interface unless a Gemini route is needed."""
+    configured = gemini.enabled() and registered_voice(Path(reference), narrator)
+    if not configured and not _requires_voice_guard(Path(cache)):
+        # The local implementation owns its constructor checks and speak API.
+        # In particular, this path must not load/read a reference, create a
+        # cache directory, or add retry arguments to a local caller's speak().
+        return local_factory(reference, cache)
     return GeminiNarrator(reference, cache, local_factory, narrator=narrator)
 
 

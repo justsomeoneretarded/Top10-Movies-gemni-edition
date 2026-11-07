@@ -1152,7 +1152,12 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     for chapter in chapters:
         chapter["start"] /= speed
     from .gemini_voice import route_summary
-    voice_route = route_summary(reference, work / "speech")
+    try:
+        voice_route = route_summary(reference, work / "speech")
+    except (OSError, ValueError, TypeError):
+        # Diagnostic metadata cannot reject otherwise verified finished speech.
+        voice_route = {"backend": "unknown", "model": selected_tts_model(),
+                       "status": "report_unavailable"}
     save_json(output / "run-manifest.json", {"channel":"MOVIE RANKS", "commit":os.getenv("GITHUB_SHA","local"),
               "genre":genre, "requested_minutes":spec.target/60, "actual_minutes":final_duration/60,
               "native_scenes_rendered":sum(e.get("type")=="trailer-audio" and e.get("native_verified",False) for e in timeline),

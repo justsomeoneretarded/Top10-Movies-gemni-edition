@@ -17,7 +17,7 @@ Run **[Generate Video — Gemini](https://github.com/justsomeoneretarded/Top10-M
 
 Gemini advice does not bypass correct-title checks, source rejection, finite video bounds, scene continuity, complete dialogue, caption alignment or final AV/speech verification. It cannot guarantee a subjective quality improvement or click-through rate.
 
-The default text/vision model is a current documented free-tier model. If that model returns a genuine unavailable-model response or a final read timeout, the provider may use the documented free Gemini 2.5 Flash alternative. Actual successful models and fallback events are reported separately from configured model/cache identity.
+The default text/vision model is a current documented free-tier model. If that model returns a genuine unavailable-model response or a final read timeout, the provider may use the documented free Gemini 2.5 Flash alternative. Actual successful models and fallback events are reported separately from configured model/cache identity. Gemini requests run in one final production process after research, paced by default at one start every twelve seconds. Downloads and music remain parallel. Local mode keeps the original parallel planning/script/voice warm-ups.
 
 ## Repository secrets
 

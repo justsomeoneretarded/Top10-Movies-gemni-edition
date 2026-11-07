@@ -152,6 +152,7 @@ def test_missing_registered_id_or_api_key_uses_unchanged_local_factory(
         monkeypatch.delenv("GEMINI_VOICE_WARGUY")
     monkeypatch.setattr(voice.gemini, "enabled", lambda: not disabled)
     narrator = env.build()
+    assert narrator is env.local
     assert narrator.speak("A local line.", 12, force=True, delivery="calm") == env.local.speak.return_value
     env.factory.assert_called_once_with(env.reference, env.cache)
     env.local.speak.assert_called_once_with("A local line.", 12, force=True, delivery="calm")
@@ -164,7 +165,7 @@ def test_stock_preset_is_never_substituted_for_character(setup_voice, monkeypatc
     monkeypatch.setenv("GEMINI_VOICE_WARGUY", "Algenib")
     narrator = setup_voice.build()
     narrator.speak("Still the original character.")
-    assert narrator.backend == "local"
+    assert narrator is setup_voice.local
     setup_voice.client.generate_audio.assert_not_called()
 
 
@@ -203,6 +204,7 @@ def test_backend_never_changes_after_any_gemini_take(setup_voice):
 def test_lost_key_or_changed_voice_cannot_switch_an_existing_episode(setup_voice, monkeypatch):
     env = setup_voice
     env.build().speak("Opening.")
+    voice._ROUTES.clear()  # Exercise the persisted guard, not only shared memory.
     monkeypatch.setattr(voice.gemini, "enabled", lambda: False)
     with pytest.raises(PipelineError, match="already uses"):
         env.build()
@@ -321,3 +323,62 @@ def test_wav_rejects_a_trailing_partial_pcm_frame(width):
     malformed = wav_bytes(width=width, frames=b"\x01" * (24000 * width + 1))
     with pytest.raises(ValueError, match="Truncated PCM"):
         voice.audio_wav(malformed, "audio/wav")
+
+
+@pytest.mark.parametrize("missing_id,disabled", [(True, False), (False, True), (True, True)])
+def test_local_factory_is_transparent_without_reference_reads(
+        setup_voice, monkeypatch, tmp_path, missing_id, disabled):
+    env = setup_voice
+    if missing_id:
+        monkeypatch.delenv("GEMINI_VOICE_WARGUY")
+    monkeypatch.setattr(voice.gemini, "enabled", lambda: not disabled)
+    fingerprint = Mock(side_effect=AssertionError("local reference must be owned by local factory"))
+    identity = Mock(side_effect=AssertionError("local route does not need Gemini identity"))
+    monkeypatch.setattr(voice, "_fingerprint", fingerprint)
+    monkeypatch.setattr(voice.gemini, "identity", identity)
+    reference, cache = tmp_path / "nonexistent-voice.ogg", tmp_path / "untouched-cache"
+
+    class ExistingLocal:
+        def __init__(self, original_reference, original_cache):
+            assert original_reference is reference and original_cache is cache
+            self.calls = []
+
+        # Baseline test doubles and existing alternate callers may expose only
+        # this narrower interface. A transparent local route must not adapt it.
+        def speak(self, text, delivery=None):
+            self.calls.append((text, delivery))
+            return "existing local result"
+
+    local_factory = Mock(side_effect=ExistingLocal)
+    narrator = voice.create_narrator(reference, cache, local_factory)
+    assert type(narrator) is ExistingLocal
+    assert narrator.speak("A local sentence.", delivery="calm") == "existing local result"
+    assert narrator.calls == [("A local sentence.", "calm")]
+    local_factory.assert_called_once_with(reference, cache)
+    fingerprint.assert_not_called()
+    identity.assert_not_called()
+    assert not reference.exists() and not cache.exists()
+
+
+def test_removed_key_and_registration_cannot_bypass_persisted_gemini_guard(
+        setup_voice, monkeypatch):
+    env = setup_voice
+    env.build().speak("The episode already began.")
+    voice._ROUTES.clear()
+    monkeypatch.setattr(voice.gemini, "enabled", lambda: False)
+    monkeypatch.delenv("GEMINI_VOICE_WARGUY")
+    with pytest.raises(PipelineError, match="already uses"):
+        env.build()
+    env.factory.assert_not_called()
+
+
+def test_local_checkpoint_does_not_wrap_or_read_reference(
+        setup_voice, monkeypatch, tmp_path):
+    env = setup_voice
+    env.client.generate_audio.side_effect = ValueError("quota")
+    env.build().speak("Choose the original reference.")
+    voice._ROUTES.clear()
+    monkeypatch.setattr(voice.gemini, "enabled", lambda: False)
+    monkeypatch.setattr(voice, "_fingerprint", Mock(side_effect=AssertionError("unexpected reference read")))
+    narrator = voice.create_narrator(tmp_path / "missing.ogg", env.cache, env.factory)
+    assert narrator is env.local

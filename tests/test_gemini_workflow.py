@@ -179,3 +179,14 @@ def test_bootstrap_keeps_cloud_model_download_lazy_and_local_route_eager(tmp_pat
     assert ("pull gemma4:12b" in commands) == expected_pull
     assert "private-key" not in commands + result.stdout + result.stderr
     assert ("scripts.runner_disk --stage script-model" in commands) == expected_pull
+
+
+def test_free_api_work_is_not_fanned_out_across_warm_jobs():
+    jobs = workflow()["jobs"]
+    assert jobs["plan"]["if"] == "${{ inputs.ai_backend == 'Local' }}"
+    assert jobs["script"]["if"] == "${{ inputs.ai_backend == 'Local' }}"
+    assert jobs["footage"]["env"]["SCENE_DESCRIPTIONS"] == "${{ inputs.ai_backend == 'Local' && 'true' || 'false' }}"
+    assert jobs["produce"]["if"] == "${{ !cancelled() }}"
+    assert jobs["footage"]["strategy"]["max-parallel"] == "2"
+    for name in ("prepare", "plan", "script", "footage", "produce"):
+        assert jobs[name]["env"]["GEMINI_MIN_INTERVAL_SECONDS"] == "${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}"

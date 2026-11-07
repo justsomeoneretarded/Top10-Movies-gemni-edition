@@ -346,7 +346,7 @@ class GeminiClient:
                     time.sleep(min(delay, 30))
                 _BUDGET.requests += 1
                 _BUDGET.video_seconds += video_seconds
-                _BUDGET.next_request = time.monotonic() + _number("GEMINI_MIN_INTERVAL_SECONDS", 6, 0, 30)
+                _BUDGET.next_request = time.monotonic() + _number("GEMINI_MIN_INTERVAL_SECONDS", 12, 0, 30)
                 started = time.monotonic()
                 try:
                     response = self.session.post(

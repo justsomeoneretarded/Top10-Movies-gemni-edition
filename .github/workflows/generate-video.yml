@@ -42,7 +42,7 @@ on:
           - Kit Laser
           - Female
       tts_model:
-        description: "Speech model (original Chatterbox by default)"
+        description: "Local fallback speech model; a registered Gemini voice takes priority"
         required: true
         type: choice
         default: original
@@ -163,7 +163,7 @@ jobs:
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
-      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
       GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
       GEMINI_USAGE_REPORT: work/gemini-usage-prepare.jsonl
@@ -223,6 +223,8 @@ jobs:
 
 
   plan:
+    # Free API calls are serialized in final production; Local keeps parallel warm-ups.
+    if: ${{ inputs.ai_backend == 'Local' }}
     # The episode plan (promise, hooks, anchors) that every script section follows.
     needs: prepare
     runs-on: ubuntu-24.04
@@ -249,7 +251,7 @@ jobs:
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
-      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
       GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
       GEMINI_USAGE_REPORT: work/gemini-usage-plan.jsonl
@@ -374,6 +376,8 @@ jobs:
           retention-days: 1
 
   script:
+    # Free API calls are serialized in final production; Local keeps parallel warm-ups.
+    if: ${{ inputs.ai_backend == 'Local' }}
     needs: [prepare, plan]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -404,7 +408,7 @@ jobs:
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
-      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
       GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
       GEMINI_USAGE_REPORT: work/gemini-usage-script-${{ matrix.part }}.jsonl
@@ -526,7 +530,7 @@ jobs:
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
-      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
       GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
       GEMINI_USAGE_REPORT: work/gemini-usage-footage-${{ matrix.part }}.jsonl
@@ -544,7 +548,8 @@ jobs:
       OLLAMA_MODELS: ${{ github.workspace }}/work/ollama-models
       PYTHONUNBUFFERED: '1'
       PIPELINE_PART: ${{ matrix.part }}
-      SCENE_DESCRIPTIONS: 'true'
+      # Downloads stay parallel; Gemini visual inference runs in the final job.
+      SCENE_DESCRIPTIONS: ${{ inputs.ai_backend == 'Local' && 'true' || 'false' }}
       SCENE_BUDGET_SECONDS: '420'
       SCENE_SAMPLE_FRAMES: '6'
     steps:
@@ -646,7 +651,7 @@ jobs:
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
-      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '6' }}
+      GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
       GEMINI_TIMEOUT_SECONDS: ${{ vars.GEMINI_TIMEOUT_SECONDS || '120' }}
       GEMINI_USAGE_REPORT: work/gemini-usage-produce.jsonl
