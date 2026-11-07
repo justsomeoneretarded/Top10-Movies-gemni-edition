@@ -1,0 +1,52 @@
+name: Gemini Live Validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/gemini-edition]
+    paths:
+      - movie_pipeline/**
+      - scripts/gemini_smoke.py
+      - scripts/gemini_preflight.py
+      - .github/workflows/gemini-validation.yml
+permissions:
+  contents: read
+concurrency:
+  group: gemini-live-validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  live-api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      AI_BACKEND: gemini
+      GEMINI_RESEARCH_MODE: public_sources
+      GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
+      GEMINI_MAX_REQUESTS: '8'
+      GEMINI_MAX_RETRIES: '1'
+      GEMINI_MIN_INTERVAL_SECONDS: '8'
+      GEMINI_TIMEOUT_SECONDS: '120'
+      GEMINI_USAGE_REPORT: gemini-validation/usage.jsonl
+      GEMINI_PREFLIGHT_REPORT: gemini-validation/capabilities.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install small API-check dependencies
+        run: python -m pip install requests Pillow
+      - name: Check configured API access without exposing credentials
+        run: python -m scripts.gemini_preflight
+      - name: Test real structured text, frame vision and verified source identity
+        run: python -m scripts.gemini_smoke
+      - name: Inspectable validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-live-validation
+          path: gemini-validation/
+          if-no-files-found: ignore
+          retention-days: 2

@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 import numpy as np
 from .core import ffmpeg, key, save_json, probe
+from . import gemini_editing
 
 def _overlap(a,b):
     return a["start"] < b["start"]+b["duration"] and a["start"]+a["duration"] > b["start"]
@@ -56,6 +57,7 @@ def candidates(selector,pool,shot_lookup,film):
         shots=shot_lookup.get(str(source),[])
         if not shots:
             continue
+        visual_advice=gemini_editing.analyse_source(Path(source))
         meaningful=_scores(selector,source,"A complete cinematic moment: a confrontation, physical comedy, chase, fight, crash, danger, fire or an emotional exchange.",len(shots))
         energetic=_scores(selector,source,"People visibly fighting, running from danger, shooting, a vehicle crash or an explosion.",len(shots))
         quiet=_scores(selector,source,"A static quiet view, an empty room or a person standing still.",len(shots))
@@ -90,8 +92,15 @@ def candidates(selector,pool,shot_lookup,film):
                     continue
                 strength=float(np.mean(energetic[indices]-quiet[indices]))
                 score=float(np.mean(meaningful[indices]+relevant[indices]))+.10*fresh+.06*min(length/10,1)
-                result.append({"source":str(source),"start":start,"duration":length,
-                               "score":score,"action_strength":strength,
+                # URL analysis is approximate: only rank already coherent, fresh,
+                # non-card local candidates. Native boundaries still pass through
+                # _enrich/complete_window and _usable after selection.
+                adjustment,notes=gemini_editing.soft_rank(visual_advice,start,end)
+                advice=({"visual_analysis":{"provider":visual_advice["provider"],
+                         "cache":visual_advice["cache"],"score_adjustment":adjustment,
+                         "notes":notes}} if visual_advice else {})
+                result.append({**advice,"source":str(source),"start":start,"duration":length,
+                               "score":score+adjustment,"action_strength":strength,
                                "motion":float(np.mean([shots[j].get("motion",0) for j in indices])),
                                "film_index":None,"scene_index":i,"scene_end":end,
                                "extent":max(float(x["end"]) for x in shots),
@@ -157,6 +166,12 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
         return None
     from .core import duration
     work.mkdir(parents=True,exist_ok=True)
+    from . import gemini
+    if gemini.enabled():
+        from .gemini_editing import analyse_source, source_rounds
+        # Cache advisory hints in fair rounds before per-film ranking consumes its budget.
+        for source in source_rounds(pools):
+            analyse_source(source)
     options={i:candidates(selector,pool,shot_lookup,films[i]) for i,pool in enumerate(pools)}
     used=[]
     opening=[]
@@ -222,4 +237,6 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
                 inserts[section_index]={body_positions[int(p)]:clip for p,clip in zip(positions,remaining)}
     return {"opening":opening,"previews":previews,"inserts":inserts,
             "report":{"opening_seconds":sum(c["duration"] for c in opening),
+                      "visual_hint_sources":len({c["source"] for c in used if c.get("visual_analysis")}),
+                      "visual_hint_timing_authority":"local_shots_and_complete_transcript",
                       "native_moments":sum(c.get("native_verified",False) and not c.get("muted",True) for c in used),"review_counts":{str(i):1+len(inserts.get(i,{})) for i in previews}}}

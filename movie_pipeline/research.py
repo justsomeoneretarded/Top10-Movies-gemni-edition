@@ -11,20 +11,28 @@ from urllib3.util.retry import Retry
 
 from .core import fold_accents, FilmInput, PipelineError, normalized, save_json
 from .wiki import wikipedia_context
+from .gemini import GeminiUnavailable, enabled, record_event
+from .gemini_research import research_film
+from .public_research import title_key
 
 
 class Research:
     def __init__(self):
         self.token = os.getenv("TMDB_READ_TOKEN", "")
-        if not self.token:
+        if not self.token and not enabled():
             raise PipelineError("Set the free TMDB_READ_TOKEN Actions secret (TMDB API Read Access Token).")
         self.session = requests.Session()
-        self.session.headers.update({"Authorization": f"Bearer {self.token}"})
+        if self.token:
+            self.session.headers.update({"Authorization": f"Bearer {self.token}"})
         self.session.mount("https://", HTTPAdapter(max_retries=Retry(total=4, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])))
 
     def get(self, endpoint: str, **params):
+        if not self.token:
+            raise PipelineError("TMDB fallback requires TMDB_READ_TOKEN when Gemini source research is unavailable or cannot verify this title.")
         response = self.session.get("https://api.themoviedb.org/3/" + endpoint, params=params, timeout=40)
         # Avoid including request URLs or token-bearing headers in exception text.
+        if response.status_code in (401, 403):
+            raise PipelineError(f"TMDB fallback authentication failed (HTTP {response.status_code}). Check TMDB_READ_TOKEN; no unverified title was accepted.")
         if response.status_code != 200:
             raise PipelineError(f"TMDB {endpoint} returned HTTP {response.status_code}. Check the token or retry later.")
         return response.json()
@@ -154,7 +162,57 @@ class Research:
         films = []
         for item in items:
             print(f"Research: {item.title} ({item.year})", flush=True)
-            film = self.resolve(item)
+            film = None
+            if enabled():
+                try:
+                    kind = getattr(self, "selected_kind", None) or getattr(self, "preferred_kind", "movie")
+                    film = research_film(item, kind)
+                    record_event("research", "gemini", "success", details={"sources": len(film["research_sources"])})
+                except (GeminiUnavailable, requests.RequestException, ValueError, TypeError, KeyError) as error:
+                    # Provider exceptions can contain credential-bearing request URLs.
+                    # Log only a fixed reason, never the exception or response body.
+                    reason = "unavailable-or-unverified"
+                    if isinstance(error, GeminiUnavailable) and re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+){1,15}", str(error)):
+                        reason = str(error)
+                    record_event("research", "gemini", "fallback", reason=reason)
+                    print("Gemini source research unavailable or unverified; trying verified TMDB research.", flush=True)
+            if film is None:
+                film = self.resolve(item)
+                if enabled():
+                    record_event("research", "tmdb", "success", reason="verified-fallback")
+            elif self.token:
+                # Optional media enrichment still passes the original TMDB identity
+                # resolver. An outage or conflicting ID cannot replace Gemini facts.
+                try:
+                    metadata = self.resolve(item)
+                    aliases = {title_key(film["title"])}
+                    aliases.update(title_key(alias) for alias in film.get("identity_aliases", []) if isinstance(alias, str))
+                    identifier = metadata.get("id")
+                    compatible = (type(identifier) is int and identifier > 0
+                                  and metadata.get("kind") == film["kind"]
+                                  and metadata.get("year") == film["year"]
+                                  and metadata.get("source") == f"https://www.themoviedb.org/{film['kind']}/{identifier}"
+                                  and title_key(str(metadata.get("title", ""))) in aliases
+                                  and (film.get("tmdb_id") is None or film["tmdb_id"] == identifier))
+                    for role in ("cast", "directors"):
+                        known = {normalized(name) for name in film.get(role, []) if isinstance(name, str)}
+                        found = {normalized(name) for name in metadata.get(role, []) if isinstance(name, str)}
+                        if known and found and not known.intersection(found):
+                            compatible = False
+                    if compatible:
+                        film["tmdb_id"] = identifier
+                        for name in ("trailers", "clips", "backdrops", "posters", "cast_profiles", "networks",
+                                     "companies", "release_date", "status", "imdb_id", "runtime_minutes"):
+                            if metadata.get(name):
+                                film[name] = metadata[name]
+                        for name in ("cast", "directors", "creators", "genres"):
+                            if not film.get(name) and metadata.get(name):
+                                film[name] = metadata[name]
+                        film["tmdb_source"] = metadata["source"]
+                    else:
+                        record_event("research", "tmdb", "unavailable", reason="optional-media-identity-conflict")
+                except (PipelineError, requests.RequestException, ValueError, TypeError, KeyError):
+                    record_event("research", "tmdb", "unavailable", reason="optional-media-enrichment")
             # Optional, keyless background notes; never required for production.
             if os.getenv("WIKIPEDIA_CONTEXT", "true").lower() != "false":
                 notes = wikipedia_context(film)

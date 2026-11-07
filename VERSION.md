@@ -1,3 +1,3 @@
-# Gemini edition baseline
+# Gemini edition
 
-This independent repository starts from normal Top10-Movies main `5daddc9c891dc39664e47084405223daccb53673`, whose production code matches pre-Graphify `c6f82a621b9de57a2c180a74cd9e37e17f2a6a92`. Original source hashes and modes are recorded in BASELINE.json. Production code and assets are initially unchanged; Gemini integration is isolated here. The normal and 2.0-ish repositories are not modified.
+Normal source baseline: 5daddc9c891dc39664e47084405223daccb53673 (pre-Graphify c6f82a62 production code). See BASELINE.json for original file hashes and modes. This independent repository adds Gemini-first research, writing and visual advice, registered-character Gemini TTS support, and the original backends as fallbacks. The normal and 2.0-ish repositories remain unchanged. Current integration and limits are documented in README.md.

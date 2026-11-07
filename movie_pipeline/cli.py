@@ -36,6 +36,58 @@ from .video_settings import (
     require_disk,
 )
 
+def episode_narrator(reference: Path, cache: Path):
+    """Use one persistent voice route; strict speech/AV verification stays downstream."""
+    from .gemini_voice import create_narrator
+    from .voice import Narrator
+    return create_narrator(reference, cache, Narrator)
+
+
+def ai_configuration() -> dict:
+    """Public model identity and voice fingerprints, never API keys or voice IDs."""
+    from .gemini import identity
+    configuration = identity()
+    configuration["voice_fingerprints"] = {
+        name: key(os.getenv("GEMINI_VOICE_" + name, ""))
+        for name in ("WARGUY", "KIT_LASER", "FEMALE")
+    }
+    return configuration
+
+
+def write_ai_report(output: Path, films: list[dict], *, voice_route: dict | None = None):
+    """Keep actual cloud/fallback events and research provenance with the deliverable."""
+    from collections import Counter
+    events = []
+    for path in sorted(Path("work").glob("gemini-usage*.jsonl")):
+        try:
+            for line in path.read_text().splitlines()[-4000:]:
+                try:
+                    event = json.loads(line)
+                    if isinstance(event, dict):
+                        events.append(event)
+                except ValueError:
+                    continue
+        except OSError:
+            continue
+    counts = Counter((str(e.get("stage", "unknown")), str(e.get("backend", "unknown")),
+                      str(e.get("status", "unknown"))) for e in events)
+    report = {"configured": ai_configuration(), "narration": voice_route or {},
+              "events": events[-4000:],
+              "counts": [{"stage": stage, "backend": backend, "status": status, "count": count}
+                         for (stage, backend, status), count in sorted(counts.items())],
+              "research": [{"title": f["title"], "year": f["year"],
+                            "backend": f.get("research_backend", "tmdb"),
+                            "method": f.get("research_method", "tmdb"),
+                            "source": f.get("source"), "sources": f.get("research_sources", [])}
+                           for f in films],
+              "limits": ["Free-tier quota and access are project-specific.",
+                         "A project with billing enabled can incur charges.",
+                         "YouTube understanding does not supply downloadable video.",
+                         "AI visual hints remain advisory; local timing and speech checks are retained.",
+                         "API success does not establish subjective production quality."]}
+    save_json(output / "ai-production-report.json", report)
+
+
 COLD_OPEN_SECONDS = 5.0
 REVIEW_PREVIEW_SECONDS = 5.0
 IMPACT_SECONDS = 3.2
@@ -199,7 +251,7 @@ def export_comparison(output: Path, work: Path, timeline: list[dict], speed: flo
     protected = [(max(0, event["start"]/speed-.25), (event["start"]+event["duration"])/speed+.25)
                  for event in timeline if event.get("type") in {"narration", "subscribe"}]
     comparison = export_augmented(output / "final-video.mp4", output / "final-video-augmented.mp4", work / "comparison", protected_intervals=protected)
-    comparison_recovery = SpeechRecovery(None, lambda: Narrator(reference, work / "speech"),
+    comparison_recovery = SpeechRecovery(None, lambda: episode_narrator(reference, work / "speech"),
         work / "comparison-audio-checks", fallback_factory=lambda: WhisperModel(
             "small.en", device="cpu", compute_type="int8", cpu_threads=min(os.cpu_count() or 2, 4),
             download_root=os.getenv("SPEECH_VERIFY_MODEL_DIR") or None))
@@ -237,7 +289,7 @@ def setup_run(title: str, brief: str, movies: str, work: Path, output: Path, sta
     reference = voice_reference(narrator, Path(os.getenv("VOICE_DIR", "assets/voices")))
     # Include the resolver policy and writing model so stale identities/scripts are not reused.
     script_model = os.getenv("SCRIPT_MODEL", "gemma4:12b")
-    run_key = key("pipeline-v15-scene-first-movie-ranks", title, brief, movies, content_type, narrator, script_model, vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
+    run_key = key("pipeline-v18-gemini-edition", title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
     work = work / run_key
     work.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
@@ -256,7 +308,7 @@ def setup_run(title: str, brief: str, movies: str, work: Path, output: Path, sta
     max_beat = min(7.0, trailer_budget(spec, len(items))*1.5)
     expected_breaks = min(3, max_beat)*len(items) + COLD_OPEN_SECONDS + REVIEW_PREVIEW_SECONDS*len(items)
     print(f"Runtime mode: {'Auto' if spec.automatic else 'selected minutes'}; soft plan {spec.target/60:.1f} minutes.", flush=True)
-    save_json(work / "input.json", {"title": title, "brief": brief, "movies": [vars(i) for i in items], "content_type": content_type or "auto", "narrator": narrator, "duration": vars(spec), "script_model": script_model, "voice_model": selected_tts_model(), "try_4k": ceiling == 2160})
+    save_json(work / "input.json", {"title": title, "brief": brief, "movies": [vars(i) for i in items], "content_type": content_type or "auto", "narrator": narrator, "duration": vars(spec), "script_model": script_model, "ai_configuration": ai_configuration(), "voice_model": selected_tts_model(), "try_4k": ceiling == 2160})
     return SimpleNamespace(items=items, content_type=content_type, ceiling=ceiling, spec=spec, max_beat=max_beat,
                            expected_breaks=expected_breaks, narrator=narrator, reference=reference, script_model=script_model,
                            work=work, research=research, films=films)
@@ -391,10 +443,12 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     from . import scenes
     if scenes.enabled():
         described = 0
-        for pool in pools:
-            for source in pool:
-                if scenes.describe_trailer(source, shot_lookup[str(source)]):
-                    described += 1
+        from .gemini import enabled as cloud_enabled
+        from .gemini_editing import source_rounds
+        scene_sources = source_rounds(pools) if cloud_enabled() else [source for pool in pools for source in pool]
+        for source in scene_sources:
+            if scenes.describe_trailer(source, shot_lookup[str(source)]):
+                described += 1
         scenes.unload()
         print(f"Scene descriptions ready for {described} of {sum(len(pool) for pool in pools)} trailers.", flush=True)
     from . import download_access
@@ -425,7 +479,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     # The same verifier then covers every hook, review, availability line and outro.
     from faster_whisper import WhisperModel
     recognizer = WhisperModel("base.en", device="cpu", compute_type="int8", cpu_threads=min(os.cpu_count() or 2, 4))
-    recovery = SpeechRecovery(recognizer, lambda: Narrator(reference, work / "speech"),
+    recovery = SpeechRecovery(recognizer, lambda: episode_narrator(reference, work / "speech"),
         work / "speech-checks", fallback_factory=lambda: WhisperModel(
             "small.en", device="cpu", compute_type="int8", cpu_threads=min(os.cpu_count() or 2, 4),
             download_root=os.getenv("SPEECH_VERIFY_MODEL_DIR") or None))
@@ -451,13 +505,13 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         recovery.release_voice()
     print("Subscribe speech verified before full narration generation.", flush=True)
 
-    print(f"Narration: {narrator} / {selected_tts_model()} on CPU", flush=True)
+    print(f"Narration: {narrator}; registered Gemini voice when configured, otherwise {selected_tts_model()} reference clone. See ai-production-report.json for the actual route.", flush=True)
     word_scale = 1.0
     best_draft = None
     intro_refined = False
     for revision in range(3):
         try:
-            speaker = Narrator(reference, work / "speech")
+            speaker = episode_narrator(reference, work / "speech")
             speech = {}
             try:
                 for section_index, section in enumerate(script["sections"]):
@@ -475,7 +529,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                 speaker.close()
             if not intro_refined:
                 script, speech = refine_intro_timing(writer, title, brief, films, script, speech,
-                    lambda: Narrator(reference, work / "speech"))
+                    lambda: episode_narrator(reference, work / "speech"))
                 intro_refined = True
             spoken_seconds = sum(duration(path) if path is not None else
                 len(script["sections"][i]["paragraphs"][p].split())*60/145
@@ -1079,7 +1133,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     print("Mixing and exporting final video", flush=True)
     final_duration, speed = finish(parts, output / "final-video.mp4", work, action, spec=spec, music_theme=music_theme,
                                    timeline=timeline, top_title=films[0]["title"], overlays=overlays)
-    export_recovery = SpeechRecovery(None, lambda: Narrator(reference, work / "speech"),
+    export_recovery = SpeechRecovery(None, lambda: episode_narrator(reference, work / "speech"),
         work / "export-audio-checks", fallback_factory=lambda: WhisperModel(
             "small.en", device="cpu", compute_type="int8", cpu_threads=min(os.cpu_count() or 2, 4),
             download_root=os.getenv("SPEECH_VERIFY_MODEL_DIR") or None))
@@ -1100,13 +1154,21 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     write_srt(output / "subtitles.srt", all_cues)
     for chapter in chapters:
         chapter["start"] /= speed
+    from .gemini_voice import route_summary
+    try:
+        voice_route = route_summary(reference, work / "speech")
+    except (OSError, ValueError, TypeError):
+        # Diagnostic metadata cannot reject otherwise verified finished speech.
+        voice_route = {"backend": "unknown", "model": selected_tts_model(),
+                       "status": "report_unavailable"}
     save_json(output / "run-manifest.json", {"channel":"MOVIE RANKS", "commit":os.getenv("GITHUB_SHA","local"),
               "genre":genre, "requested_minutes":spec.target/60, "actual_minutes":final_duration/60,
               "native_scenes_rendered":sum(e.get("type")=="trailer-audio" and e.get("native_verified",False) for e in timeline),
               "review_previews":sum(e.get("type")=="review-preview" for e in timeline),
               "rank_announcements":sum(bool(e.get("rank_announcement")) for e in timeline),
               "accepted_sources":[{"title":film["title"],"sources":[str(p) for p in pool]} for film,pool in zip(films,pools)],
-              "voice_model":selected_tts_model(),"narrator":narrator})
+              "voice_model":voice_route.get("model", selected_tts_model()),"voice_backend":voice_route.get("backend", "local"),
+              "fallback_voice_model":selected_tts_model(),"narrator":narrator,"ai_configuration":ai_configuration()})
     package = script["package"]
     (output / "recommended-title.txt").write_text(package["title"].strip() + "\n")
     write_upload_extras(output, package, films)
@@ -1120,11 +1182,22 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     if os.getenv("COMPARISON_EXPORT", "false").lower() == "true":
         # Optional (repository variable COMPARISON_EXPORT=true): roughly doubles the final encode time.
         export_comparison(output, work, timeline, speed, reference)
-    credits = music_credit(music_theme)+"\nFilm metadata: TMDB — https://www.themoviedb.org/\nWatch listings: JustWatch via TMDB — https://www.justwatch.com/us\n"
+    credits = music_credit(music_theme)+"\n"
+    if any(film.get("research_backend") != "gemini" or film.get("tmdb_source") for film in films):
+        credits += "Film metadata/media: TMDB — https://www.themoviedb.org/\n"
+    if any(film.get("availability") for film in films):
+        credits += "Watch listings: JustWatch via TMDB — https://www.justwatch.com/us\n"
     if meme_used:
         credits += str(meme.get("attribution", "Intro meme"))+" — "+str(meme.get("source", ""))+"\n"
     if cta_rendered.get("credit_source"):
         credits += str(cta_rendered.get("attribution", "Subscribe reaction"))+" — "+str(cta_rendered["credit_source"])+"\n"
+    research_links = list(dict.fromkeys(
+        source.get("url", source.get("uri", "")) if isinstance(source, dict) else str(source)
+        for film in films for source in film.get("research_sources", [])
+    ))
+    if research_links:
+        credits += "\nVerified research sources:\n" + "\n".join(
+            link for link in research_links if link.startswith(("https://", "http://"))) + "\n"
     (output / "sources-and-credits.txt").write_text(credits)
     thumbnails(trailers, shot_sets, package["thumbnail_texts"], output, films=films,
                concepts=package.get("thumbnail_concepts"), title=title, brief=brief,
@@ -1158,6 +1231,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     notice("Complete", f"{final_duration/60:.2f} min video at tempo {speed:.3f}; loudness before mastering "
            f"{loudness.get('measured', {}).get('integrated', '?')} LUFS, gain {loudness.get('gain_db', '?')} dB; "
            f"{assembly.get('effect_events', 0)} transition effects. Total {(time.time()-started)/60:.0f} min.")
+    write_ai_report(output, films, voice_route=voice_route)
     print(f"Complete: {final_duration/60:.2f} minutes. Package: {output}", flush=True)
 
 
@@ -1165,10 +1239,15 @@ def warm_voice(sections: list[dict], ctx) -> int:
     """Record this section's narration in the parallel job (same cache the final job reads)."""
     if os.getenv("VOICE_WARM", "false").strip().lower() != "true" or not sections:
         return 0
+    from .gemini import enabled as gemini_enabled
+    from .gemini_voice import has_registered_voice
+    if gemini_enabled() and has_registered_voice(ctx.narrator):
+        print("Registered Gemini voice: narration is generated in one final job to preserve speaker consistency.", flush=True)
+        return 0
     try:
         from .script import aligned_delivery
         from .voice import Narrator
-        speaker = Narrator(ctx.reference, ctx.work / "speech")
+        speaker = episode_narrator(ctx.reference, ctx.work / "speech")
     except Exception as exc:  # noqa: BLE001 -- the final job voices everything itself
         print(f"Voice warm-up skipped ({type(exc).__name__}: {str(exc)[:200]}).", flush=True)
         return 0
