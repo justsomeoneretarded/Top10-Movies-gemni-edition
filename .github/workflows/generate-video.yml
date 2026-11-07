@@ -155,9 +155,10 @@ jobs:
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
-      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
-      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
-      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
+      GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ secrets.GEMINI_VOICE_KIT_LASER || vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
@@ -240,9 +241,10 @@ jobs:
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
-      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
-      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
-      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
+      GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ secrets.GEMINI_VOICE_KIT_LASER || vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
@@ -394,9 +396,10 @@ jobs:
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
-      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
-      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
-      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
+      GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ secrets.GEMINI_VOICE_KIT_LASER || vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
@@ -515,9 +518,10 @@ jobs:
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
-      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
-      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
-      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
+      GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ secrets.GEMINI_VOICE_KIT_LASER || vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
@@ -634,9 +638,10 @@ jobs:
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
-      GEMINI_VOICE_WARGUY: ${{ vars.GEMINI_VOICE_WARGUY }}
-      GEMINI_VOICE_KIT_LASER: ${{ vars.GEMINI_VOICE_KIT_LASER }}
-      GEMINI_VOICE_FEMALE: ${{ vars.GEMINI_VOICE_FEMALE }}
+      # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
+      GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
+      GEMINI_VOICE_KIT_LASER: ${{ secrets.GEMINI_VOICE_KIT_LASER || vars.GEMINI_VOICE_KIT_LASER }}
+      GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
       GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}

@@ -35,7 +35,8 @@ def test_backend_choice_secret_alias_and_models_reach_every_pipeline_job():
         assert env["GEMINI_TTS_MODEL"] == "${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}"
         for narrator in ("WARGUY", "KIT_LASER", "FEMALE"):
             variable = "GEMINI_VOICE_" + narrator
-            assert env[variable] == "${{ vars." + variable + " }}"
+            assert env[variable] == "${{ secrets." + variable + " || vars." + variable + " }}"
+            assert env[variable].startswith("${{ secrets.")  # No literal voice key is embedded.
         assert env["SCRIPT_MODEL"] == "gemma4:12b"
         assert env["GEMINI_FREE_ONLY"] == "true"
         assert "GEMINI_MAX_REQUESTS" in env and "GEMINI_MAX_VIDEO_SECONDS" in env
