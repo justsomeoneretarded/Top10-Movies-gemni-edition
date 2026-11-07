@@ -314,7 +314,7 @@ class GeminiNarrator:
             reveal = bool(re.match(r"\s*Number\s+\w+\s*:", text))
             lead = int((REVEAL_LEAD if reveal else 0.16) * 1000)
             ffmpeg("-i", raw, "-af", VOICE_CHAIN.format(lead=lead),
-                   "-ar", "48000", "-ac", "1", "-c:a", "pcm_s24le", rendered)
+                   "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", rendered)
             rate, channels, _, count = _wav_info(rendered.read_bytes())
             if rate != 48000 or channels != 1 or not 0.15 <= count / rate <= max(30, len(text.split()) * 2 + 10):
                 raise ValueError("Invalid converted Gemini narration.")

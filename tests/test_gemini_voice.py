@@ -1,5 +1,6 @@
 import io
 import json
+import shutil
 import wave
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -46,7 +47,7 @@ def setup_voice(monkeypatch, tmp_path):
         source = raw.read_bytes()
         rate, channels, width, count = voice._wav_info(source)
         conversions.append((args, source))
-        args[-1].write_bytes(wav_bytes(rate=48000, seconds=count / rate, width=3))
+        args[-1].write_bytes(wav_bytes(rate=48000, seconds=count / rate, width=2))
 
     monkeypatch.setattr(voice, "ffmpeg", convert)
     return SimpleNamespace(reference=reference, cache=cache, client=client,
@@ -131,10 +132,10 @@ def test_valid_generation_uses_registered_identity_and_converts_to_48k(setup_voi
     env.client.generate_audio.assert_called_once_with(
         "Number 3: Megan. A complete thought.", "voice_registered_warguy",
         style=voice.DELIVERY_STYLES["dramatic"])
-    assert voice._wav_info(path.read_bytes())[:3] == (48000, 1, 3)
+    assert voice._wav_info(path.read_bytes())[:3] == (48000, 1, 2)
     args, raw = env.conversions[0]
     assert "adelay=180" in args[args.index("-af") + 1]
-    assert args[args.index("-c:a") + 1] == "pcm_s24le"
+    assert args[args.index("-c:a") + 1] == "pcm_s16le"
     assert raw == wav_bytes()
     assert env.reference.read_bytes() == b"unchanged-user-reference"
     assert path.with_suffix(".dry.wav").read_bytes() == raw
@@ -302,3 +303,14 @@ def test_registered_helper_and_route_summary_never_expose_id(setup_voice, monkey
     assert voice.route_summary(env.reference, env.cache)["status"] == "started"
     monkeypatch.delenv("GEMINI_VOICE_WARGUY")
     assert not voice.has_registered_voice("warguy")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+def test_real_ffmpeg_output_is_decodable_on_supported_python_311(setup_voice, monkeypatch):
+    # PCM24 FFmpeg WAV uses WAVE_FORMAT_EXTENSIBLE, which wave cannot read on
+    # Python 3.11. The production adapter must emit classic PCM16 instead.
+    from movie_pipeline.core import ffmpeg
+
+    monkeypatch.setattr(voice, "ffmpeg", ffmpeg)
+    output = setup_voice.build().speak("A complete narrated sentence.")
+    assert voice._wav_info(output.read_bytes())[:3] == (48000, 1, 2)
