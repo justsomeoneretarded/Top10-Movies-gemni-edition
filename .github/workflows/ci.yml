@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Compile Python source before dependency setup
+        run: python3 -m compileall -q movie_pipeline scripts
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

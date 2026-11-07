@@ -11,20 +11,27 @@ from urllib3.util.retry import Retry
 
 from .core import fold_accents, FilmInput, PipelineError, normalized, save_json
 from .wiki import wikipedia_context
+from .gemini import GeminiUnavailable, enabled, record_event
+from .gemini_research import research_film
 
 
 class Research:
     def __init__(self):
         self.token = os.getenv("TMDB_READ_TOKEN", "")
-        if not self.token:
+        if not self.token and not enabled():
             raise PipelineError("Set the free TMDB_READ_TOKEN Actions secret (TMDB API Read Access Token).")
         self.session = requests.Session()
-        self.session.headers.update({"Authorization": f"Bearer {self.token}"})
+        if self.token:
+            self.session.headers.update({"Authorization": f"Bearer {self.token}"})
         self.session.mount("https://", HTTPAdapter(max_retries=Retry(total=4, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])))
 
     def get(self, endpoint: str, **params):
+        if not self.token:
+            raise PipelineError("TMDB fallback requires TMDB_READ_TOKEN when grounded Gemini research is unavailable or cannot verify this title.")
         response = self.session.get("https://api.themoviedb.org/3/" + endpoint, params=params, timeout=40)
         # Avoid including request URLs or token-bearing headers in exception text.
+        if response.status_code in (401, 403):
+            raise PipelineError(f"TMDB fallback authentication failed (HTTP {response.status_code}). Check TMDB_READ_TOKEN; no unverified title was accepted.")
         if response.status_code != 200:
             raise PipelineError(f"TMDB {endpoint} returned HTTP {response.status_code}. Check the token or retry later.")
         return response.json()
@@ -154,7 +161,34 @@ class Research:
         films = []
         for item in items:
             print(f"Research: {item.title} ({item.year})", flush=True)
-            film = self.resolve(item)
+            film = None
+            if enabled():
+                try:
+                    kind = getattr(self, "selected_kind", None) or getattr(self, "preferred_kind", "movie")
+                    film = research_film(item, kind)
+                    record_event("research", "gemini", "success", details={"sources": len(film["research_sources"])})
+                except (GeminiUnavailable, requests.RequestException, ValueError, TypeError, KeyError):
+                    # Provider exceptions can contain credential-bearing request URLs.
+                    # Log only a fixed reason, never the exception or response body.
+                    record_event("research", "gemini", "fallback", reason="unavailable-or-unverified")
+                    print("Grounded Gemini research unavailable or unverified; trying verified TMDB research.", flush=True)
+            if film is None:
+                film = self.resolve(item)
+                if enabled():
+                    record_event("research", "tmdb", "success", reason="verified-fallback")
+            elif self.token and film.get("tmdb_id"):
+                # Optional media enrichment still passes the original TMDB identity
+                # resolver. An outage or conflicting ID cannot replace Gemini facts.
+                try:
+                    metadata = self.resolve(item)
+                    if metadata["id"] == film["tmdb_id"] and metadata["kind"] == film["kind"]:
+                        for name in ("trailers", "clips", "backdrops", "posters", "cast_profiles", "networks",
+                                     "companies", "release_date", "status", "imdb_id", "runtime_minutes"):
+                            if metadata.get(name):
+                                film[name] = metadata[name]
+                        film["tmdb_source"] = metadata["source"]
+                except (PipelineError, requests.RequestException, ValueError, TypeError, KeyError):
+                    record_event("research", "tmdb", "unavailable", reason="optional-media-enrichment")
             # Optional, keyless background notes; never required for production.
             if os.getenv("WIKIPEDIA_CONTEXT", "true").lower() != "false":
                 notes = wikipedia_context(film)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Ollama is a local inference server. No account or paid API is used.
+# Ollama provides local inference and a lazy fallback for the Gemini route.
 case "$#" in
   0) mode=script ;;
   1)
@@ -16,6 +16,12 @@ case "$#" in
     exit 2
     ;;
 esac
+
+# Gemini jobs keep a healthy fallback server, but download the script model only
+# if a cloud call actually needs the local Writer. Explicit Local remains eager.
+if [ "${AI_BACKEND:-gemini}" != local ] && [ -n "${GEMINI_API_KEY:-${GEMINI_API:-}}" ]; then
+  mode=serve-only
+fi
 
 runner_temp="${RUNNER_TEMP:-/tmp}"
 model="${SCRIPT_MODEL:-gemma4:12b}"

@@ -84,7 +84,12 @@ def enrich_availability(films: list[dict], research, cache: Path) -> list[dict]:
         session.headers.update(research.session.headers)
         session.mount("https://", HTTPAdapter(max_retries=0))
         for film in films:
-            kind, identifier = film.get("kind"), film.get("id")
+            kind = film.get("kind")
+            grounded = film.get("research_backend") == "gemini"
+            identifier = film.get("tmdb_id") if grounded else film.get("id")
+            if grounded and not getattr(research, "token", ""):
+                result.append({**film, "watch_availability": _empty(now)})
+                continue
             if kind not in {"movie", "tv"} or not isinstance(identifier, int) or isinstance(identifier, bool) or identifier <= 0:
                 result.append({**film, "watch_availability": _empty(now)})
                 continue
