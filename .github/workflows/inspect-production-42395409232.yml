@@ -1,0 +1,89 @@
+name: Inspect Gemini production reports
+on:
+  push:
+    branches: [diagnostics/inspect-production-42395409232]
+    paths: [.github/workflows/inspect-production-42395409232.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download completed output for read-only inspection
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '42395409232'
+          name: movie-video-1
+          path: package
+      - name: Download sanitized API usage records
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '42395409232'
+          name: gemini-usage-produce
+          path: usage
+      - name: Print manifests and production reports
+        shell: python
+        run: |
+          import json
+          import re
+          from collections import Counter
+          from pathlib import Path
+          sensitive = re.compile(r'(api.?key|token|secret|cookie|authorization|voice.?id)', re.I)
+          def clean(value):
+              if isinstance(value, dict):
+                  return {k: '[redacted]' if sensitive.search(k) else clean(v) for k,v in value.items()}
+              if isinstance(value, list):
+                  return [clean(v) for v in value]
+              return value
+          print('PACKAGE_FILES')
+          for path in sorted(Path('package').rglob('*')):
+              if path.is_file():
+                  print(path.as_posix(), path.stat().st_size)
+          for root in ('package','usage'):
+              for path in sorted(Path(root).rglob('*.json')):
+                  if path.stat().st_size > 2_000_000:
+                      print('REPORT_TOO_LARGE', path.as_posix())
+                      continue
+                  value = clean(json.loads(path.read_text()))
+                  print('REPORT_BEGIN', path.as_posix())
+                  print(json.dumps(value, ensure_ascii=False)[:80000])
+                  print('REPORT_END')
+              for path in sorted(Path(root).rglob('*.jsonl')):
+                  if path.stat().st_size > 2_000_000:
+                      print('USAGE_TOO_LARGE', path.as_posix())
+                      continue
+                  events = [clean(json.loads(line)) for line in path.read_text().splitlines() if line.strip()]
+                  print('USAGE_BEGIN', path.as_posix(), len(events))
+                  for event in events:
+                      print(json.dumps(event, ensure_ascii=False)[:4000])
+                  print('USAGE_END')
+          for path in Path('package').rglob('recommended-title.txt'):
+              print('RECOMMENDED_TITLE', path.read_text()[:1000])
+      - name: Install small contact-sheet dependency
+        run: python3 -m pip install pillow
+      - name: Render existing thumbnails for actual visual inspection
+        shell: python
+        run: |
+          import base64
+          import io
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          paths = sorted(Path('package').rglob('thumbnail-*.jpg'))
+          sheet = Image.new('RGB', (960, 5 * 294), '#111115')
+          draw = ImageDraw.Draw(sheet)
+          for i, path in enumerate(paths[:10]):
+              with Image.open(path) as source:
+                  source.load()
+                  source.thumbnail((480,270))
+                  x,y=(i % 2)*480, (i // 2)*294
+                  sheet.paste(source,(x,y))
+                  draw.text((x+8,y+274),path.name,fill='white')
+          buffer=io.BytesIO()
+          sheet.save(buffer,format='JPEG',quality=85)
+          print('THUMBNAIL_CONTACT_BEGIN')
+          print(base64.b64encode(buffer.getvalue()).decode('ascii'))
+          print('THUMBNAIL_CONTACT_END')
