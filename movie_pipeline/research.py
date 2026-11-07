@@ -13,6 +13,7 @@ from .core import fold_accents, FilmInput, PipelineError, normalized, save_json
 from .wiki import wikipedia_context
 from .gemini import GeminiUnavailable, enabled, record_event
 from .gemini_research import research_film
+from .public_research import title_key
 
 
 class Research:
@@ -27,7 +28,7 @@ class Research:
 
     def get(self, endpoint: str, **params):
         if not self.token:
-            raise PipelineError("TMDB fallback requires TMDB_READ_TOKEN when grounded Gemini research is unavailable or cannot verify this title.")
+            raise PipelineError("TMDB fallback requires TMDB_READ_TOKEN when Gemini source research is unavailable or cannot verify this title.")
         response = self.session.get("https://api.themoviedb.org/3/" + endpoint, params=params, timeout=40)
         # Avoid including request URLs or token-bearing headers in exception text.
         if response.status_code in (401, 403):
@@ -171,22 +172,42 @@ class Research:
                     # Provider exceptions can contain credential-bearing request URLs.
                     # Log only a fixed reason, never the exception or response body.
                     record_event("research", "gemini", "fallback", reason="unavailable-or-unverified")
-                    print("Grounded Gemini research unavailable or unverified; trying verified TMDB research.", flush=True)
+                    print("Gemini source research unavailable or unverified; trying verified TMDB research.", flush=True)
             if film is None:
                 film = self.resolve(item)
                 if enabled():
                     record_event("research", "tmdb", "success", reason="verified-fallback")
-            elif self.token and film.get("tmdb_id"):
+            elif self.token:
                 # Optional media enrichment still passes the original TMDB identity
                 # resolver. An outage or conflicting ID cannot replace Gemini facts.
                 try:
                     metadata = self.resolve(item)
-                    if metadata["id"] == film["tmdb_id"] and metadata["kind"] == film["kind"]:
+                    aliases = {title_key(film["title"])}
+                    aliases.update(title_key(alias) for alias in film.get("identity_aliases", []) if isinstance(alias, str))
+                    identifier = metadata.get("id")
+                    compatible = (type(identifier) is int and identifier > 0
+                                  and metadata.get("kind") == film["kind"]
+                                  and metadata.get("year") == film["year"]
+                                  and metadata.get("source") == f"https://www.themoviedb.org/{film['kind']}/{identifier}"
+                                  and title_key(str(metadata.get("title", ""))) in aliases
+                                  and (film.get("tmdb_id") is None or film["tmdb_id"] == identifier))
+                    for role in ("cast", "directors"):
+                        known = {normalized(name) for name in film.get(role, []) if isinstance(name, str)}
+                        found = {normalized(name) for name in metadata.get(role, []) if isinstance(name, str)}
+                        if known and found and not known.intersection(found):
+                            compatible = False
+                    if compatible:
+                        film["tmdb_id"] = identifier
                         for name in ("trailers", "clips", "backdrops", "posters", "cast_profiles", "networks",
                                      "companies", "release_date", "status", "imdb_id", "runtime_minutes"):
                             if metadata.get(name):
                                 film[name] = metadata[name]
+                        for name in ("cast", "directors", "creators", "genres"):
+                            if not film.get(name) and metadata.get(name):
+                                film[name] = metadata[name]
                         film["tmdb_source"] = metadata["source"]
+                    else:
+                        record_event("research", "tmdb", "unavailable", reason="optional-media-identity-conflict")
                 except (PipelineError, requests.RequestException, ValueError, TypeError, KeyError):
                     record_event("research", "tmdb", "unavailable", reason="optional-media-enrichment")
             # Optional, keyless background notes; never required for production.
