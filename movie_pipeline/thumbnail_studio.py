@@ -437,20 +437,29 @@ def good_face(candidate: Candidate) -> bool:
 
 
 def rate_with_vision(candidates: list[Candidate], limit: int = 6, profile: dict | None = None) -> int:
-    """Ask the local vision model about the most promising candidates; returns how many it rated."""
-    from . import scenes
+    """Rate promising actual frames; Gemini uses one indexed request for the top six."""
+    from . import gemini, scenes
     if not scenes.enabled():
         return 0
     profile = profile or GENRE_PROFILES[DEFAULT_GENRE]
     import time
     deadline=time.monotonic()+90
     rated = 0
-    for candidate in sorted(candidates, key=lambda c: -c.score)[:limit]:
-        if time.monotonic() >= deadline:
-            break
-        verdict = scenes.rate_thumbnail(candidate.image, profile["label"], profile["hint"])
-        if verdict is None:
-            break
+    cloud = gemini.enabled()
+    selected = sorted(candidates, key=lambda c: -c.score)[:min(limit, 6) if cloud else limit]
+    batch = (scenes.rate_thumbnails([c.image for c in selected], profile["label"], profile["hint"], deadline=deadline)
+             if cloud else None)
+    for index, candidate in enumerate(selected):
+        if batch is None:
+            if time.monotonic() >= deadline:
+                break
+            verdict = scenes.rate_thumbnail(candidate.image, profile["label"], profile["hint"])
+            if verdict is None:
+                break
+        else:
+            verdict = batch[index]
+            if verdict is None:
+                continue
         rated += 1
         candidate.notes = {**candidate.notes, **verdict}
         candidate.action = verdict["action"] / 10

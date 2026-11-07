@@ -77,6 +77,7 @@ def write_ai_report(output: Path, films: list[dict], *, voice_route: dict | None
                          for (stage, backend, status), count in sorted(counts.items())],
               "research": [{"title": f["title"], "year": f["year"],
                             "backend": f.get("research_backend", "tmdb"),
+                            "method": f.get("research_method", "tmdb"),
                             "source": f.get("source"), "sources": f.get("research_sources", [])}
                            for f in films],
               "limits": ["Free-tier quota and access are project-specific.",
@@ -442,10 +443,12 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     from . import scenes
     if scenes.enabled():
         described = 0
-        for pool in pools:
-            for source in pool:
-                if scenes.describe_trailer(source, shot_lookup[str(source)]):
-                    described += 1
+        from .gemini import enabled as cloud_enabled
+        from .gemini_editing import source_rounds
+        scene_sources = source_rounds(pools) if cloud_enabled() else [source for pool in pools for source in pool]
+        for source in scene_sources:
+            if scenes.describe_trailer(source, shot_lookup[str(source)]):
+                described += 1
         scenes.unload()
         print(f"Scene descriptions ready for {described} of {sum(len(pool) for pool in pools)} trailers.", flush=True)
     from . import download_access
@@ -1193,7 +1196,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         for film in films for source in film.get("research_sources", [])
     ))
     if research_links:
-        credits += "\nGrounded research sources:\n" + "\n".join(
+        credits += "\nVerified research sources:\n" + "\n".join(
             link for link in research_links if link.startswith(("https://", "http://"))) + "\n"
     (output / "sources-and-credits.txt").write_text(credits)
     thumbnails(trailers, shot_sets, package["thumbnail_texts"], output, films=films,

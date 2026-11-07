@@ -32,6 +32,7 @@ def test_backend_choice_secret_alias_and_models_reach_every_pipeline_job():
         assert env["GEMINI_TEXT_MODEL"] == "${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}"
         assert env["GEMINI_VISION_MODEL"] == "${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}"
         assert env["GEMINI_RESEARCH_MODEL"] == "${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}"
+        assert env["GEMINI_RESEARCH_MODE"] == "${{ vars.GEMINI_RESEARCH_MODE || 'public_sources' }}"
         assert env["GEMINI_TTS_MODEL"] == "${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}"
         for narrator in ("WARGUY", "KIT_LASER", "FEMALE"):
             variable = "GEMINI_VOICE_" + narrator
@@ -90,6 +91,7 @@ def probe_env(monkeypatch, tmp_path):
 
 def test_metadata_probe_authenticates_via_header_without_content_generation(monkeypatch, tmp_path, capsys):
     report = probe_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("GEMINI_RESEARCH_MODE", "legacy_google_search")
     calls = []
     def urlopen(request, timeout):
         calls.append(request)
@@ -190,3 +192,18 @@ def test_free_api_work_is_not_fanned_out_across_warm_jobs():
     assert jobs["footage"]["strategy"]["max-parallel"] == "2"
     for name in ("prepare", "plan", "script", "footage", "produce"):
         assert jobs[name]["env"]["GEMINI_MIN_INTERVAL_SECONDS"] == "${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}"
+
+
+def test_public_research_catalog_probe_uses_the_current_extraction_model(monkeypatch, tmp_path):
+    report = probe_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("GEMINI_RESEARCH_MODE", "public_sources")
+    monkeypatch.setattr(gemini_preflight.urllib.request, "urlopen", lambda *a, **kw:
+                        io.BytesIO(json.dumps({"models": [{
+                            "name": "models/gemini-3.8-flash",
+                            "supportedGenerationMethods": ["generateContent"]
+                        }]}).encode()))
+    assert gemini_preflight.main() == 0
+    result = json.loads(report.read_text())
+    assert result["models"]["research"]["model"] == "gemini-3.8-flash"
+    assert result["research_mode"] == "public_sources"
+    assert result["inference_verified"] is False

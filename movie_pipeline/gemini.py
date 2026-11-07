@@ -25,14 +25,15 @@ import requests
 
 SCHEMA_VERSION = 1
 FREE_TEXT_MODELS = frozenset({
-    "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+    "gemini-3.8-flash", "gemini-3.5-flash-lite",
 })
 FREE_TTS_MODELS = frozenset({
     "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts",
 })
-FREE_MODELS = FREE_TEXT_MODELS | FREE_TTS_MODELS
-_ACTUAL_MODELS = {}
+# These Search models are available only to grandfathered prior users.
 GROUNDING_MODELS = frozenset({"gemini-2.5-flash", "gemini-2.5-flash-lite"})
+FREE_MODELS = FREE_TEXT_MODELS | FREE_TTS_MODELS | GROUNDING_MODELS
+_ACTUAL_MODELS = {}
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 _LOG_LOCK = threading.Lock()
 _CLIENT_LOCK = threading.Lock()
@@ -76,10 +77,15 @@ def _models():
     }
 
 
+def _research_mode():
+    return os.getenv("GEMINI_RESEARCH_MODE", "public_sources").strip().lower()
+
+
 def identity():
     """JSON-serializable cache identity; includes neither key nor voice tokens."""
     return {
         "backend": "gemini" if enabled() else "local",
+        "research_mode": _research_mode(),
         **_models(),
         "schema_version": SCHEMA_VERSION,
         "free_only": True,
@@ -161,7 +167,7 @@ def get_client():
     global _CLIENT, _CLIENT_SIGNATURE
     if not enabled():
         raise _unavailable("gemini_disabled_or_key_missing")
-    signature = (_key(), tuple(_models().items()))
+    signature = (_key(), tuple(_models().items()), _research_mode())
     with _CLIENT_LOCK:
         if _CLIENT is None or signature != _CLIENT_SIGNATURE:
             _CLIENT = GeminiClient()
@@ -326,6 +332,7 @@ class GeminiClient:
         for name, model in _models().items():
             setattr(self, name, _ACTUAL_MODELS.get(model, model))
         self.model = self.text_model
+        self.research_mode = _research_mode()
         self.session = session if session is not None else requests.Session()
 
     def _request(self, model, payload, stage, video_seconds=0.0):
@@ -449,12 +456,9 @@ class GeminiClient:
             raise _unavailable("invalid_schema_or_output_budget") from None
         config = {"maxOutputTokens": max_output_tokens,
                   "responseMimeType": "application/json", "responseJsonSchema": schema}
-        if model.startswith("gemini-2.5-"):
-            config["thinkingConfig"] = {"thinkingBudget": 512}
-        else:
-            if thinking not in {"low", "medium", "high"}:
-                raise _unavailable("invalid_thinking_level")
-            config["thinkingConfig"] = {"thinkingLevel": thinking}
+        if thinking not in {"low", "medium", "high"}:
+            raise _unavailable("invalid_thinking_level")
+        config["thinkingConfig"] = {"thinkingLevel": thinking}
         stage = "vision" if images or youtube_url else "text"
         payload = {"contents": [{"role": "user", "parts": parts}], "generationConfig": config}
         try:
@@ -465,8 +469,8 @@ class GeminiClient:
                 raise
             # An unavailable or persistently slow primary model may use this free
             # alternative. Auth, quota, blocked content and connection errors do not.
-            config["thinkingConfig"] = {"thinkingBudget": 512}
-            model = "gemini-2.5-flash"
+            config["thinkingConfig"] = {"thinkingLevel": "low"}
+            model = "gemini-3.5-flash-lite"
             data = self._request(model, payload, stage, video_seconds)
             _ACTUAL_MODELS["gemini-3.8-flash"] = model
             if self.text_model == "gemini-3.8-flash":
@@ -488,6 +492,10 @@ class GeminiClient:
         return value
 
     def grounded_text(self, prompt):
+        # Search has no free entitlement for new Gemini API projects. The 2.5
+        # allowance applies only to prior users and must be explicitly selected.
+        if self.research_mode != "legacy_google_search":
+            raise _unavailable("legacy_google_search_not_enabled")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 160000:
             raise _unavailable("invalid_prompt")
         _check_model(self.research_model, GROUNDING_MODELS)

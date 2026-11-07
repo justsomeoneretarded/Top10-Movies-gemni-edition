@@ -20,6 +20,7 @@ jobs:
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
       AI_BACKEND: gemini
+      GEMINI_RESEARCH_MODE: public_sources
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
@@ -39,7 +40,7 @@ jobs:
         run: python -m pip install requests Pillow
       - name: Check configured API access without exposing credentials
         run: python -m scripts.gemini_preflight
-      - name: Test real structured text, frame vision and grounded identity
+      - name: Test real structured text, frame vision and verified source identity
         run: python -m scripts.gemini_smoke
       - name: Inspectable validation reports
         if: always()

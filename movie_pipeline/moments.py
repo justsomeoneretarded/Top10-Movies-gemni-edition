@@ -166,6 +166,12 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
         return None
     from .core import duration
     work.mkdir(parents=True,exist_ok=True)
+    from . import gemini
+    if gemini.enabled():
+        from .gemini_editing import analyse_source, source_rounds
+        # Cache advisory hints in fair rounds before per-film ranking consumes its budget.
+        for source in source_rounds(pools):
+            analyse_source(source)
     options={i:candidates(selector,pool,shot_lookup,films[i]) for i,pool in enumerate(pools)}
     used=[]
     opening=[]

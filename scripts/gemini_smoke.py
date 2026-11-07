@@ -58,14 +58,15 @@ def main():
             else:
                 os.environ["WIKIPEDIA_CONTEXT"] = previous
         if len(films) != 1 or films[0].get("research_backend") != "gemini" or not films[0].get("research_sources"):
-            raise ValueError("Grounded primary research not demonstrated")
-        report["checks"]["grounded_research_without_tmdb"] = {
+            raise ValueError("Verified source research not demonstrated")
+        report["checks"]["verified_source_research_without_tmdb"] = {
             "status": "passed", "title": films[0]["title"], "year": films[0]["year"],
-            "source_count": len(films[0]["research_sources"])}
+            "source_count": len(films[0]["research_sources"]),
+            "method": films[0].get("research_method", "unknown")}
     except Exception as exc:
-        report["checks"]["grounded_research_without_tmdb"] = {
+        report["checks"]["verified_source_research_without_tmdb"] = {
             "status": "failed", "reason": type(exc).__name__ + ": " + gemini._redact(str(exc))[:180]}
-        errors.append("grounded_research_without_tmdb")
+        errors.append("verified_source_research_without_tmdb")
     report["checks"]["custom_voice"] = {
         "status": "not_generated",
         "reason": "A real actor reference, same-speaker consent and registered voice ID are required. Chatterbox preserves the existing reference identity."}

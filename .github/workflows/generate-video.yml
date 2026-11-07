@@ -154,6 +154,7 @@ jobs:
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_RESEARCH_MODE: ${{ vars.GEMINI_RESEARCH_MODE || 'public_sources' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
       # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
       GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
@@ -242,6 +243,7 @@ jobs:
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_RESEARCH_MODE: ${{ vars.GEMINI_RESEARCH_MODE || 'public_sources' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
       # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
       GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
@@ -399,6 +401,7 @@ jobs:
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_RESEARCH_MODE: ${{ vars.GEMINI_RESEARCH_MODE || 'public_sources' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
       # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
       GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
@@ -521,6 +524,7 @@ jobs:
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_RESEARCH_MODE: ${{ vars.GEMINI_RESEARCH_MODE || 'public_sources' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
       # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
       GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}
@@ -642,6 +646,7 @@ jobs:
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
+      GEMINI_RESEARCH_MODE: ${{ vars.GEMINI_RESEARCH_MODE || 'public_sources' }}
       GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts' }}
       # Prefer masked secrets for registered voice IDs/keys; variables remain compatible.
       GEMINI_VOICE_WARGUY: ${{ secrets.GEMINI_VOICE_WARGUY || vars.GEMINI_VOICE_WARGUY }}

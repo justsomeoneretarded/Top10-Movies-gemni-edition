@@ -8,7 +8,7 @@ Run **[Generate Video — Gemini](https://github.com/justsomeoneretarded/Top10-M
 
 | Stage | Primary route | Existing fallback |
 |---|---|---|
-| Research | Google Search grounding with Gemini 2.5 Flash; cited title/year/medium and premise validation | Verified TMDB research plus optional Wikipedia |
+| Research | Retrieved public source pages, with Gemini 3.8 Flash extracting verified identity, premise and story details | Verified TMDB research plus optional Wikipedia |
 | Script and packaging | Gemini 3.8 Flash for episode planning, narration, editorial passes, title/description and thumbnail concepts | Existing Gemma 4 12B/Ollama writer, fetched only when needed |
 | Frame understanding | Gemini 3.8 Flash describes the actual trailer frames | Existing local Qwen vision and image matching |
 | Native scene selection | Bounded public-YouTube analysis gives approximate visual interest windows | Existing local shot/scene analysis and transcript boundaries |
@@ -17,18 +17,26 @@ Run **[Generate Video — Gemini](https://github.com/justsomeoneretarded/Top10-M
 
 Gemini advice does not bypass correct-title checks, source rejection, finite video bounds, scene continuity, complete dialogue, caption alignment or final AV/speech verification. It cannot guarantee a subjective quality improvement or click-through rate.
 
-The default text/vision model is a current documented free-tier model. If that model returns a genuine unavailable-model response or a final read timeout, the provider may use the documented free Gemini 2.5 Flash alternative. Actual successful models and fallback events are reported separately from configured model/cache identity. Gemini requests run in one final production process after research, paced by default at one start every twelve seconds. Downloads and music remain parallel. Local mode keeps the original parallel planning/script/voice warm-ups.
+The default text/vision model is a current documented free-tier model. If that model returns a genuine unavailable-model response or a final read timeout, the provider may use the documented free Gemini 3.5 Flash-Lite alternative. Actual successful models and fallback events are reported separately from configured model/cache identity. Gemini requests run in one final production process after research, paced by default at one start every twelve seconds. Downloads and music remain parallel. Local mode keeps the original parallel planning/script/voice warm-ups.
 
 ## Repository secrets
 
 Set these under **Settings → Secrets and variables → Actions**:
 
 - **GEMINI_API**: your Gemini Developer API key. **GEMINI_API_KEY** is also accepted.
-- **TMDB_READ_TOKEN**: optional verified-metadata fallback. Use TMDB's API Read Access Token, not its shorter API Key. Successful grounded Gemini research does not require it.
+- **TMDB_READ_TOKEN**: optional verified-metadata fallback. Use TMDB's API Read Access Token, not its shorter API Key. Successful source-backed Gemini research does not require it.
 - **YOUTUBE_COOKIES**: optional Netscape cookie export for yt-dlp when YouTube requires authentication.
 - **TELEGRAM_BOT_TOKEN**, **TELEGRAM_CHAT_ID**: optional completion notifications.
 
 Use an **unbilled Free Tier Google project**. Google does not provide a per-request "free only" switch, and model metadata cannot establish a key's billing status. This edition restricts calls to documented free-tier models, excludes paid native image generation and bounds requests/retries. Supplying a key from a billed project can still incur that project's normal API charges. Quotas and availability depend on the Google project.
+
+### Free research and Google Search limits
+
+For a new free-tier project, native Google Search grounding is unavailable. Gemini 2.5's legacy free Search allowance is restricted to prior active users; model catalog listings do not establish inference eligibility.
+
+The default **public_sources** route retrieves bounded Wikipedia search results, actual canonical page URLs and plaintext over a separate unauthenticated connection. Gemini extracts exact source quotations, and Python verifies title/aliases, release year, medium and premise. This is retrieved-source context, **not native Google Search grounding**. Optional TMDB artwork enrichment is identity-checked and never replaces the source-backed synopsis.
+
+Previously eligible projects can explicitly set **GEMINI_RESEARCH_MODE=legacy_google_search** to try the legacy 2.5 Search route, then public sources on failure. This edition never enables paid 3.x Search automatically.
 
 ### Why yt-dlp and cookies still exist
 
@@ -58,18 +66,18 @@ Additional reports:
 
 - **ai-production-report.json** records configured models, actual backend events and research provenance.
 - Per-job **gemini-usage-*.jsonl** and **gemini-preflight-*.json** reports distinguish authenticated access, API results and fallback. They contain no API key, prompt bodies or raw voice keys.
-- Grounded research sources appear in **sources-and-credits.txt**.
+- Retrieved research sources and the research method appear in **sources-and-credits.txt** and the AI report.
 - Gemini scene hints are advisory caches alongside accepted footage; local windows and recognized speech remain timing authority.
 
 The default thumbnail path remains actual images/frames composed locally. Gemini native image-generation APIs have no documented free API tier, so they are not called.
 
 ## Controls and validation
 
-Useful optional repository variables include GEMINI_TEXT_MODEL, GEMINI_VISION_MODEL, GEMINI_RESEARCH_MODEL, GEMINI_TTS_MODEL, GEMINI_MAX_REQUESTS, GEMINI_MAX_VIDEO_SECONDS, GEMINI_MIN_INTERVAL_SECONDS, GEMINI_MAX_RETRIES and GEMINI_TIMEOUT_SECONDS. The application rejects models outside its free-tier allowlist.
+Useful optional repository variables include GEMINI_TEXT_MODEL, GEMINI_VISION_MODEL, GEMINI_RESEARCH_MODE, GEMINI_RESEARCH_MODEL, GEMINI_TTS_MODEL, GEMINI_MAX_REQUESTS, GEMINI_MAX_VIDEO_SECONDS, GEMINI_MIN_INTERVAL_SECONDS, GEMINI_MAX_RETRIES and GEMINI_TIMEOUT_SECONDS. The application rejects models outside its free-tier allowlist.
 
 Defaults bound requests per process/job, pace calls and stop repeated quota/auth failures. Model quota failures do not disable unrelated models. Google quotas are project-wide, so parallel jobs still share those external limits. Optional video analysis is capped and cannot multiply indefinitely with extra sources.
 
-**Tests** runs existing regressions plus mocked provider, research, voice, visual, workflow and integration contracts. **Gemini Live Validation** makes a small bounded real-key check of structured output, frame understanding and grounded research without a TMDB token. It does not claim voice-clone enrollment, YouTube download success or subjective video quality.
+**Tests** runs existing regressions plus mocked provider, research, voice, visual, workflow and integration contracts. **Gemini Live Validation** makes a small bounded real-key check of structured output, frame understanding and verified public-source research without a TMDB token. It does not claim voice-clone enrollment, YouTube download success or subjective video quality.
 
 Model/Python caches, production cleanup and two-day final artifact retention are preserved. New repositories begin with cold caches. Gemini/model/voice fingerprints isolate checkpoints from normal/local runs.
 

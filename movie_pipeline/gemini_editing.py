@@ -62,19 +62,42 @@ def frame_provider_identity(local_model: str) -> dict:
             "fallback": local, "schema_version": VERSION}
 
 
-def frame_json(image, prompt: str, schema: dict, stage: str, max_tokens: int) -> dict | None:
-    """Try the actual supplied frame first; a failure requests the caller's local path."""
+def frames_json(images, prompt: str, schema: dict, stage: str, max_tokens: int) -> dict | None:
+    """One bounded request for actual supplied frames; no per-image cloud retries."""
     if not gemini.enabled():
         return None
     try:
+        images = tuple(images)
+        if not 1 <= len(images) <= 6:
+            raise ValueError("Expected one to six actual frames")
         result = gemini.get_client().generate_json(
-            prompt, schema, images=(image,), max_output_tokens=max_tokens, thinking="low")
+            prompt, schema, images=images, max_output_tokens=max_tokens, thinking="low")
         if not isinstance(result, dict):
             raise ValueError("Expected a visual judgement object")
         return result
     except Exception as exc:  # Optional enrichment must preserve the local path.
         gemini.record_event(stage, "gemini", "fallback", type(exc).__name__)
         return None
+
+
+def frame_json(image, prompt: str, schema: dict, stage: str, max_tokens: int) -> dict | None:
+    return frames_json((image,), prompt, schema, stage, max_tokens)
+
+
+def indexed_rows(data, field: str, count: int) -> dict[int, dict]:
+    """Match only unique strict integer image indexes; response order has no meaning."""
+    if not isinstance(data, dict) or not isinstance(data.get(field), list):
+        return {}
+    # Cap malformed response work independently of provider-side schema enforcement.
+    rows = data[field]
+    if len(rows) > max(1, count) * 4:
+        return {}
+    counts = {}
+    for row in rows:
+        if isinstance(row, dict) and type(row.get("index")) is int and 0 <= row["index"] < count:
+            counts[row["index"]] = counts.get(row["index"], 0) + 1
+    return {row["index"]: row for row in rows if isinstance(row, dict)
+            and type(row.get("index")) is int and counts.get(row["index"]) == 1}
 
 
 def youtube_url(value) -> str | None:
@@ -228,3 +251,9 @@ def soft_rank(analysis: dict | None, start: float, end: float) -> tuple[float, l
             if coverage >= .6:
                 notes.append(hint["description"])
     return max(-.06, min(.055, best-penalty)), list(dict.fromkeys(notes))[:2]
+
+
+def source_rounds(pools) -> list[Path]:
+    """Give every title's primary source a turn before spending advice on extras."""
+    return [Path(pool[slot]) for slot in range(max((len(pool) for pool in pools), default=0))
+            for pool in pools if slot < len(pool)]

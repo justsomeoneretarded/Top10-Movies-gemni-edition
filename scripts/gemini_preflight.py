@@ -28,6 +28,8 @@ def _selected_models() -> dict[str, str]:
         if capability == "text" and not value:
             value = os.getenv("GEMINI_MODEL", "").strip()
         value = value or default
+        if capability == "research" and os.getenv("GEMINI_RESEARCH_MODE", "public_sources").strip().lower() != "legacy_google_search":
+            value = (os.getenv("GEMINI_TEXT_MODEL") or os.getenv("GEMINI_MODEL") or "gemini-3.8-flash").strip()
         # Never echo arbitrary configuration or use it in an API URL.
         result[capability] = value if re.fullmatch(r"gemini-[a-z0-9._-]{1,100}", value) else "invalid-model-id"
     return result
@@ -61,6 +63,8 @@ def main() -> int:
         "schema_version": 1,
         "probe": "authenticated-model-metadata-only",
         "billing_verified": False,
+        "inference_verified": False,
+        "research_mode": os.getenv("GEMINI_RESEARCH_MODE", "public_sources").strip().lower(),
         "free_only_enforced_by_provider": True,
         "models": {},
     }
