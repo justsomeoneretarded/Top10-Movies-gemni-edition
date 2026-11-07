@@ -54,7 +54,7 @@ def isolated_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("AI_BACKEND", "gemini")
     for name in ("GEMINI_MODEL", "GEMINI_TEXT_MODEL", "GEMINI_RESEARCH_MODEL",
                  "GEMINI_VISION_MODEL", "GEMINI_TTS_MODEL", "GEMINI_MAX_VIDEO_SECONDS",
-                 "GEMINI_USAGE_MAX_BYTES"):
+                 "GEMINI_USAGE_MAX_BYTES", "GEMINI_RESEARCH_MODE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("GEMINI_MAX_REQUESTS", "120")
     monkeypatch.setenv("GEMINI_MAX_RETRIES", "0")
@@ -74,6 +74,12 @@ def client(*responses):
     return gemini.GeminiClient(session=session), session
 
 
+def legacy_client(*responses):
+    provider, session = client(*responses)
+    provider.research_mode = "legacy_google_search"
+    return provider, session
+
+
 def test_enablement_alias_local_override_and_safe_identity(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY")
     assert not gemini.enabled()
@@ -85,6 +91,7 @@ def test_enablement_alias_local_override_and_safe_identity(monkeypatch):
     assert identity["backend"] == "gemini"
     assert identity["text_model"] == "gemini-3.8-flash"
     assert identity["research_model"] == "gemini-2.5-flash"
+    assert identity["research_mode"] == "public_sources"
     assert identity["tts_model"] == "gemini-3.8-flash-tts"
     assert identity["free_only"] is True
     assert "secret" not in json.dumps(identity)
@@ -115,10 +122,12 @@ def test_json_payload_uses_current_thinking_and_schema_without_sampling():
     assert call["timeout"][0] == 10 and call["timeout"][1] <= 180
 
 
-def test_legacy_free_model_uses_thinking_budget():
-    provider, session = client(Response(answer()))
-    provider.generate_json("Example", SCHEMA, model="gemini-2.5-flash")
-    assert session.calls[0][1]["json"]["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 512}
+@pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
+def test_legacy_models_are_not_used_for_normal_text_or_vision(model):
+    provider, session = client()
+    with pytest.raises(gemini.GeminiUnavailable, match="free_tier"):
+        provider.generate_json("Example", SCHEMA, model=model)
+    assert not session.calls
 
 
 @pytest.mark.parametrize("model", ["gemini-3-pro-image", "gemini-nano-banana-2.1",
@@ -135,9 +144,9 @@ def test_unavailable_preferred_model_reports_actual_model_without_changing_cache
     provider, session = client(Response({"error": {"code": 404}}, 404), Response(answer()))
     assert provider.generate_json("Example", SCHEMA) == {"answer": "ok"}
     assert [url.split("/")[-1] for url, _ in session.calls] == [
-        "gemini-3.8-flash:generateContent", "gemini-2.5-flash:generateContent"]
-    assert session.calls[1][1]["json"]["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 512}
-    assert provider.text_model == provider.model == "gemini-2.5-flash"
+        "gemini-3.8-flash:generateContent", "gemini-3.5-flash-lite:generateContent"]
+    assert session.calls[1][1]["json"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert provider.text_model == provider.model == "gemini-3.5-flash-lite"
     assert gemini.identity()["text_model"] == "gemini-3.8-flash"
 
 
@@ -218,7 +227,7 @@ def test_grounding_preserves_actual_supports_and_source_indices():
                                "groundingChunkIndices": [1]}],
         "webSearchQueries": ["Example film"], "searchEntryPoint": {"renderedContent": "<div>Search</div>"},
     }
-    provider, session = client(Response(answer("A pilot returns.", grounding=grounding)))
+    provider, session = legacy_client(Response(answer("A pilot returns.", grounding=grounding)))
     result = provider.grounded_text("Research the verified film")
     assert result["text"] == "A pilot returns."
     assert result["grounding"] == grounding
@@ -227,11 +236,12 @@ def test_grounding_preserves_actual_supports_and_source_indices():
     url, call = session.calls[0]
     assert "gemini-2.5-flash:" in url
     assert call["json"]["tools"] == [{"google_search": {}}]
+    assert call["json"]["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 512}
     assert "responseMimeType" not in call["json"]["generationConfig"]
 
 
 def test_ungrounded_answer_does_not_invent_sources():
-    provider, _ = client(Response(answer("Unverified answer")))
+    provider, _ = legacy_client(Response(answer("Unverified answer")))
     result = provider.grounded_text("Research")
     assert result == {"text": "Unverified answer", "sources": [], "grounding": {}}
 
@@ -354,7 +364,7 @@ def test_usage_log_is_bounded_and_cannot_break_fallback(monkeypatch, tmp_path):
     (503, {"error": {"status": "UNAVAILABLE"}}, "service_unavailable"),
 ])
 def test_research_model_circuit_does_not_disable_independent_text_model(status, body, reason):
-    provider, session = client(Response(body, status), Response(answer()))
+    provider, session = legacy_client(Response(body, status), Response(answer()))
     with pytest.raises(gemini.GeminiUnavailable, match=reason):
         provider.grounded_text("Research the verified film")
     # Repeating this model is suppressed, preserving requests for other models.
@@ -368,16 +378,16 @@ def test_research_model_circuit_does_not_disable_independent_text_model(status, 
 
 
 def test_slow_primary_model_falls_back_without_disabling_grounded_research(tmp_path):
-    provider, session = client(
+    provider, session = legacy_client(
         requests.ReadTimeout("private URL and test-gemini-secret must stay private"),
         Response(answer()), Response(answer("A pilot returns.")))
     configured_identity = gemini.identity()
     assert provider.generate_json("Write from verified facts", SCHEMA) == {"answer": "ok"}
-    assert provider.text_model == provider.vision_model == "gemini-2.5-flash"
+    assert provider.text_model == provider.vision_model == "gemini-3.5-flash-lite"
     assert gemini.identity() == configured_identity
     assert provider.grounded_text("Research the next film")["text"] == "A pilot returns."
     assert [url.split("/")[-1] for url, _ in session.calls] == [
-        "gemini-3.8-flash:generateContent", "gemini-2.5-flash:generateContent",
+        "gemini-3.8-flash:generateContent", "gemini-3.5-flash-lite:generateContent",
         "gemini-2.5-flash:generateContent"]
     assert gemini._BUDGET.blocked == ""
     assert gemini._BUDGET.blocked_models["gemini-3.8-flash"] == "model_read_timeout"
@@ -408,3 +418,28 @@ def test_http_failures_record_status_without_server_body(tmp_path):
     diagnostic = next(row for row in rows if row["reason"] == "http_error")
     assert diagnostic["details"]["http_status"] == 400
     assert "private response" not in json.dumps(rows) and "test-gemini-secret" not in json.dumps(rows)
+
+
+def test_public_research_mode_never_calls_google_search_by_default():
+    provider, session = client()
+    assert provider.research_mode == "public_sources"
+    with pytest.raises(gemini.GeminiUnavailable, match="legacy_google_search_not_enabled"):
+        provider.grounded_text("Research a film")
+    assert session.calls == []
+
+
+def test_legacy_search_requires_explicit_configured_mode(monkeypatch):
+    monkeypatch.setenv("GEMINI_RESEARCH_MODE", "legacy_google_search")
+    provider, session = client(Response(answer("Legacy sourced answer")))
+    assert gemini.identity()["research_mode"] == provider.research_mode == "legacy_google_search"
+    assert provider.grounded_text("Research")["text"] == "Legacy sourced answer"
+    assert len(session.calls) == 1 and "gemini-2.5-flash:" in session.calls[0][0]
+
+
+def test_modern_fallback_is_free_and_has_no_search_tool():
+    provider, session = client(Response(answer()))
+    assert provider.generate_json("Summarize fetched public sources", SCHEMA,
+                                  model="gemini-3.5-flash-lite") == {"answer": "ok"}
+    payload = session.calls[0][1]["json"]
+    assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert "tools" not in payload
