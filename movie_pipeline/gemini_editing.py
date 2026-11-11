@@ -44,24 +44,26 @@ _ATTEMPTED: set[str] = set()
 _VIDEO_DEADLINE = None
 _FINGERPRINTS: dict[tuple, dict] = {}
 
+# Only types, enums and required fields are sent: Gemini rejected (HTTP 400) the same schema with
+# length, range and list-size limits for video input. Every value is bounded in validate_windows instead.
 VIDEO_SCHEMA = {
     "type": "object",
-    "properties": {"windows": {"type": "array", "maxItems": MAX_WINDOWS, "items": {
+    "properties": {"windows": {"type": "array", "items": {
         "type": "object", "properties": {
             "start": {"type": "number"}, "end": {"type": "number"},
-            "description": {"type": "string", "maxLength": 220},
-            "interest": {"type": "number", "minimum": 0, "maximum": 1},
-            "action": {"type": "number", "minimum": 0, "maximum": 1},
+            "description": {"type": "string"},
+            "interest": {"type": "number"},
+            "action": {"type": "number"},
             "title_card": {"type": "boolean"},
             "kind": {"type": "string", "enum": list(KINDS)},
-            "energy": {"type": "number", "minimum": 0, "maximum": 1},
+            "energy": {"type": "number"},
             "sound": {"type": "string", "enum": list(SOUNDS)},
             "complete": {"type": "boolean"}},
         "required": ["start", "end", "description", "interest", "action", "title_card",
                      "kind", "energy", "sound", "complete"]}},
         "review": {"type": "object", "properties": {
             "suitable": {"type": "boolean"},
-            "variety": {"type": "number", "minimum": 0, "maximum": 1},
+            "variety": {"type": "number"},
             "problem": {"type": "string", "enum": list(PROBLEMS)}},
             "required": ["suitable", "variety", "problem"]}},
     "required": ["windows", "review"]}
