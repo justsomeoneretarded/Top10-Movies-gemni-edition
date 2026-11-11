@@ -16,7 +16,7 @@ import numpy as np
 
 RATE = 48000
 CONTROL_RATE = 100  # gain automation points per second
-RAMP_SECONDS = 0.45
+RAMP_SECONDS = 1.2  # music level changes glide over about a second, never jump
 
 # Multipliers on the quiet base bed (about 20 dB under narration).
 MUSIC_LEVELS = {
@@ -272,6 +272,16 @@ def effects_track(path: Path, timeline: list[dict], speed: float, total: float) 
 
 
 DELIVERY_PACE = {"hype": 1.05, "normal": 1.0, "dramatic": 0.94, "calm": 0.97}
+
+
+def narration_speed() -> float:
+    """The run's narration speed (workflow dropdown: 1, 1.1, 1.2 or 1.3; default 1.2)."""
+    import os
+    try:
+        value = float(os.getenv("NARRATION_SPEED", "1.2"))
+    except ValueError:
+        value = 1.2
+    return min(1.3, max(1.0, value))
 
 
 def delivery_speed(theme_rate: float, delivery: str, *, words: int | None = None,

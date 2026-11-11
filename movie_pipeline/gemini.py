@@ -424,10 +424,20 @@ class GeminiClient:
                     reason = "quota_exhausted" if status == 429 else "service_unavailable"
                     _BUDGET.blocked_models[model] = reason
                     raise _unavailable(reason)
-                raise _unavailable("request_rejected")
+                # Google's text is never stored; only its error code and which known problem words it mentions.
+                error = data.get("error") if isinstance(data.get("error"), dict) else {}
+                code = str(error.get("status", ""))[:40] if re.fullmatch(r"[A-Z_]{3,40}", str(error.get("status", ""))) else ""
+                lowered = str(error.get("message", "")).lower()
+                hints = [word for word in ("youtube", "video", "file_uri", "fileuri", "mime", "schema", "json", "unsupported",
+                                           "not supported", "public", "private", "too long", "too large", "duration",
+                                           "token", "thinking", "model", "safety", "blocked", "unavailable", "permission")
+                         if word in lowered][:6]
+                record_event(stage, "gemini", "rejected_detail", f"http_{status}", details={"code": code, "hints": hints, "model": model})
+                detail = ", ".join(part for part in (code, "mentions: " + "/".join(hints) if hints else "") if part)
+                raise _unavailable(f"request_rejected (HTTP {status}{': ' + detail if detail else ''})")
 
     def generate_json(self, prompt, schema, *, model=None, max_output_tokens=8192,
-                      images=(), youtube_url=None, video_duration=None, thinking="low"):
+                      images=(), youtube_url=None, video_duration=None, thinking="low", video_file=None):
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 160000:
             raise _unavailable("invalid_prompt")
         if not isinstance(schema, dict):
@@ -435,7 +445,7 @@ class GeminiClient:
         images = tuple(images)
         if len(images) > 8:
             raise _unavailable("image_budget_exhausted")
-        model = model or (self.vision_model if images or youtube_url else self.text_model)
+        model = model or (self.vision_model if images or youtube_url or video_file else self.text_model)
         _check_model(model, FREE_TEXT_MODELS)
         parts = [_image_part(path) for path in images]
         video_seconds = 0.0
@@ -448,6 +458,14 @@ class GeminiClient:
             except (TypeError, ValueError):
                 raise _unavailable("video_duration_required_or_too_long") from None
             parts.append({"file_data": {"file_uri": url}})
+        elif video_file is not None:
+            try:
+                video_seconds = float(video_duration)
+                if not math.isfinite(video_seconds) or not 0 < video_seconds <= 10800:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise _unavailable("video_duration_required_or_too_long") from None
+            parts.append({"file_data": {"mime_type": video_file["mime_type"], "file_uri": video_file["uri"]}})
         parts.append({"text": prompt})
         try:
             max_output_tokens = max(256, min(16384, int(max_output_tokens)))
@@ -459,7 +477,7 @@ class GeminiClient:
         if thinking not in {"low", "medium", "high"}:
             raise _unavailable("invalid_thinking_level")
         config["thinkingConfig"] = {"thinkingLevel": thinking}
-        stage = "vision" if images or youtube_url else "text"
+        stage = "vision" if images or youtube_url or video_file else "text"
         payload = {"contents": [{"role": "user", "parts": parts}], "generationConfig": config}
         try:
             data = self._request(model, payload, stage, video_seconds)
@@ -533,6 +551,40 @@ class GeminiClient:
         record_event("research", "gemini", "success" if sources else "ungrounded",
                      details={"model": self.research_model, "source_count": len(sources)})
         return {"text": text, "sources": sources, "grounding": grounding}
+
+    def upload_video(self, path, timeout=300):
+        """Upload a local video to the Gemini Files API (free, kept 48 hours); returns {uri, mime_type}."""
+        size = os.path.getsize(path)
+        if not 0 < size <= 400 * 1024 * 1024:
+            raise _unavailable("upload_too_large")
+        base = "https://generativelanguage.googleapis.com"
+        headers = {"x-goog-api-key": self._api_key}
+        try:
+            start = self.session.post(base + "/upload/v1beta/files", headers={
+                **headers, "X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start",
+                "X-Goog-Upload-Header-Content-Length": str(size), "X-Goog-Upload-Header-Content-Type": "video/mp4",
+                "Content-Type": "application/json"}, json={"file": {"display_name": os.path.basename(str(path))[:120]}}, timeout=(10, 60))
+            upload_url = start.headers.get("x-goog-upload-url") or start.headers.get("X-Goog-Upload-URL")
+            if start.status_code != 200 or not upload_url:
+                raise _unavailable(f"upload_start_failed (HTTP {start.status_code})")
+            with open(path, "rb") as stream:
+                done = self.session.post(upload_url, headers={
+                    "Content-Length": str(size), "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize"},
+                    data=stream, timeout=(10, 600))
+            info = done.json().get("file", {}) if done.status_code == 200 else {}
+            name, uri = info.get("name"), info.get("uri")
+            if not name or not uri:
+                raise _unavailable(f"upload_failed (HTTP {done.status_code})")
+            deadline = time.monotonic() + timeout
+            while info.get("state") == "PROCESSING" and time.monotonic() < deadline:
+                time.sleep(5)
+                info = self.session.get(f"{base}/v1beta/{name}", headers=headers, timeout=(10, 60)).json()
+            if info.get("state") not in (None, "ACTIVE"):
+                raise _unavailable(f"upload_not_active ({info.get('state')})")
+            record_event("vision", "gemini", "uploaded", details={"bytes": size})
+            return {"uri": uri, "mime_type": info.get("mimeType") or "video/mp4"}
+        except requests.RequestException as error:
+            raise _unavailable(f"upload_transport_error ({type(error).__name__})") from None
 
     def generate_audio(self, text, voice_id, style=""):
         _check_model(self.tts_model, FREE_TTS_MODELS)

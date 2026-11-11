@@ -360,6 +360,16 @@ def edit_report(films: list[dict], pools, scene_maps: dict[str, list[dict]]) -> 
             "titles": rows, "candidate_reviews": reviews}
 
 
+def _proxy_copy(source: Path) -> Path:
+    """A small 360p copy with identical timing, so uploads are quick and timestamps still match."""
+    from .core import ffmpeg
+    target = Path(source).with_suffix(".gemini-proxy.mp4")
+    if not target.exists() or target.stat().st_size < 1000:
+        ffmpeg("-i", source, "-vf", "scale=-2:360", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+               "-c:a", "aac", "-b:a", "64k", "-ac", "1", target)
+    return target
+
+
 def cache_path(source: Path) -> Path:
     return Path(source).with_suffix(".gemini-video.json")
 
@@ -419,9 +429,21 @@ def analyse_source(source: Path) -> dict | None:
             return None
         _ATTEMPTED.add(url)
         prompt = scene_prompt(actual_duration)
-        response = gemini.get_client().generate_json(
-            prompt, VIDEO_SCHEMA, youtube_url=url, video_duration=actual_duration,
-            max_output_tokens=4096, thinking="low")
+        client = gemini.get_client()
+        route = "youtube_link"
+        try:
+            response = client.generate_json(
+                prompt, VIDEO_SCHEMA, youtube_url=url, video_duration=actual_duration,
+                max_output_tokens=4096, thinking="low")
+        except gemini.GeminiUnavailable as error:
+            # The link route failed (rejected link, restricted video...): send Gemini the downloaded file itself.
+            if "quota" in str(error) or "authentication" in str(error):
+                raise
+            route = "uploaded_file"
+            uploaded = client.upload_video(_proxy_copy(source), timeout=300)
+            response = client.generate_json(
+                prompt, VIDEO_SCHEMA, video_file=uploaded, video_duration=actual_duration,
+                max_output_tokens=4096, thinking="low")
         windows = validate_windows(response, actual_duration)
         if not windows:
             gemini.record_event("video_analysis", "gemini", "fallback", "no valid visual windows")
@@ -429,7 +451,7 @@ def analyse_source(source: Path) -> dict | None:
             return None
         data = {**expected, "windows": windows, "review": validate_review(response)}
         save_json(cache_path(source), data)
-        REPORT[str(source)] = {"status": "scene map", "scenes": len(windows)}
+        REPORT[str(source)] = {"status": "scene map", "scenes": len(windows), "route": route}
         gemini.record_event("video_analysis", "gemini", "success",
                             details={"windows": len(windows), "source_sha256": fingerprint["sha256"],
                                      "timing_authority": "local_shots_and_transcript"})

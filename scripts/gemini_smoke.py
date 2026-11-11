@@ -70,9 +70,37 @@ def main():
     report["checks"]["custom_voice"] = {
         "status": "not_generated",
         "reason": "A real actor reference, same-speaker consent and registered voice ID are required. Chatterbox preserves the existing reference identity."}
-    report["checks"]["youtube"] = {
-        "status": "production_validation_required",
-        "reason": "Production analyzes actual accepted public footage. API understanding does not download media."}
+    # Video understanding, exactly as production asks for it: a public YouTube link, then an uploaded file.
+    from movie_pipeline import gemini_editing
+    video_schema = {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
+    for name, kwargs, schema, prompt in (
+            ("youtube_simple", {}, video_schema, "Summarize this video in one sentence."),
+            ("youtube_scene_map", {}, gemini_editing.VIDEO_SCHEMA, gemini_editing.scene_prompt(60))):
+        try:
+            value = client.generate_json(prompt, schema, youtube_url="https://www.youtube.com/watch?v=9hE5-98ZeCg",
+                                         video_duration=60, max_output_tokens=4096, thinking="low", **kwargs)
+            report["checks"][name] = {"status": "passed", "keys": sorted(value)[:5]}
+        except Exception as exc:
+            report["checks"][name] = {"status": "failed", "reason": type(exc).__name__ + ": " + gemini._redact(str(exc))[:240]}
+            errors.append(name)
+    try:
+        import shutil
+        import subprocess
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("ffmpeg not installed on this runner")
+        clip = root / "smoke.mp4"
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=6",
+                        "-f", "lavfi", "-i", "sine=f=440:d=6", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(clip)], check=True)
+        uploaded = client.upload_video(clip, timeout=120)
+        value = client.generate_json("Describe this short test video in one sentence.", video_schema,
+                                     video_file=uploaded, video_duration=6, max_output_tokens=1024, thinking="low")
+        report["checks"]["uploaded_video"] = {"status": "passed", "keys": sorted(value)[:5]}
+    except Exception as exc:
+        report["checks"]["uploaded_video"] = {"status": "failed", "reason": type(exc).__name__ + ": " + gemini._redact(str(exc))[:240]}
+        errors.append("uploaded_video")
+    for name in ("youtube_simple", "youtube_scene_map", "uploaded_video"):
+        check = report["checks"][name]
+        print(f"::{'notice' if check['status'] == 'passed' else 'warning'} title=Gemini video check: {name}::{check['status']} {check.get('reason', '')}", flush=True)
     usage = Path(os.getenv("GEMINI_USAGE_REPORT", "work/gemini-usage.jsonl"))
     if usage.exists():
         events = []

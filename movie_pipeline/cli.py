@@ -289,7 +289,7 @@ def setup_run(title: str, brief: str, movies: str, work: Path, output: Path, sta
     reference = voice_reference(narrator, Path(os.getenv("VOICE_DIR", "assets/voices")))
     # Include the resolver policy and writing model so stale identities/scripts are not reused.
     script_model = os.getenv("SCRIPT_MODEL", "gemma4:12b")
-    run_key = key("pipeline-v19-gemini-scene-plan", title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
+    run_key = key("pipeline-v20-gemini-scene-plan", os.getenv("NARRATION_SPEED", "1.2"), title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
     work = work / run_key
     work.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
@@ -337,6 +337,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         end_screen_video,
         finish,
         j_cut,
+        l_cut,
         label_image,
         number_one_tease_image,
         watermark_image,
@@ -466,8 +467,15 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     scene_maps = {}
     if _gemini.enabled():
         for i, pool in enumerate(pools):
-            for source in pool:
+            for source in list(pool):
                 analysis = gemini_editing.analyse_source(Path(source))
+                review = (analysis or {}).get("review") or {}
+                if source != pool[0] and review.get("reviewed") and review.get("suitable") is False:
+                    # Gemini watched this extra and found a reaction, review, fan edit, slideshow or talking heads.
+                    pool.remove(source)
+                    gemini_editing.REPORT[str(source)] = {"status": "dropped", "reason": f"Gemini judged it unsuitable ({review.get('problem')})"}
+                    print(f"Gemini review: dropped {Path(source).name} for {films[i]['title']} ({review.get('problem')}).", flush=True)
+                    continue
                 scene_maps[str(source)] = gemini_editing.verify_scenes(analysis, shot_lookup.get(str(source), []))
             described = [line for source in pool for line in gemini_editing.scenes_for_writer(scene_maps[str(source)])]
             if described:
@@ -492,7 +500,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     writer = Writer(cache_dir=work / "script-sections")
     print(f"Script model: {writer.model}", flush=True)
     script_path = work / "script.json"
-    script = json.loads(script_path.read_text()) if script_path.exists() else writer.write(title, brief, films, target_seconds=spec.target, trailer_seconds=expected_breaks, automatic=spec.automatic)
+    script = json.loads(script_path.read_text()) if script_path.exists() else writer.write(title, brief, films, word_scale=_speed_words(), target_seconds=spec.target, trailer_seconds=expected_breaks, automatic=spec.automatic)
     script = writer.refresh_editorial(title, brief, films, script, automatic=spec.automatic)
     refresh_availability(script, films)
     from .rank_intro import prepare_rank_intros
@@ -620,7 +628,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     music_theme = theme_for(title, brief)
     voice_speed = narration_rate(music_theme)
     from .script import aligned_delivery
-    from .sound_design import delivery_speed
+    from .sound_design import delivery_speed, narration_speed
     from .voice import paced_take
     paced = {}
     delivery_report = {}
@@ -628,8 +636,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         section = script["sections"][coordinate[0]]
         label = aligned_delivery(section)[coordinate[1]]
         # Hooks and reveals move a little faster; tense or emotional lines breathe.
-        paragraph_speed = delivery_speed(voice_speed, label,
-            words=len(section["paragraphs"][coordinate[1]].split()), seconds=duration(audio))
+        paragraph_speed = round(delivery_speed(voice_speed, label,
+            words=len(section["paragraphs"][coordinate[1]].split()), seconds=duration(audio)) * narration_speed(), 3)
         delivery_report[label] = delivery_report.get(label, 0) + 1
         if (audio, paragraph_speed) not in paced:
             paced[(audio, paragraph_speed)] = paced_take(audio, paragraph_speed)
@@ -639,7 +647,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     print(f"Narration delivery: {delivery_report}.", flush=True)
     notice("Narration", f"Delivery labels {delivery_report}; {sum(duration(a) for a in set(speech.values()))/60:.1f} min of speech. "
            f"Elapsed {(time.time()-started)/60:.0f} min.")
-    cta_speed = delivery_speed(voice_speed, "normal", words=len(cta_text.split()), seconds=duration(cta_audio))
+    cta_speed = round(delivery_speed(voice_speed, "normal", words=len(cta_text.split()), seconds=duration(cta_audio)) * narration_speed(), 3)
     if cta_speed != 1:
         cta_audio = paced_take(cta_audio, cta_speed)
         cta_cues = [{**cue, "start": cue["start"]/cta_speed,
@@ -887,6 +895,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         used_video_sources.add(str(source))
         offset += seconds
         note_visual_beat(selector, seconds, still=bool(shot.get("still")))
+    pending_tail = None  # (source, time) of the last scene with sound, for an L-cut into narration
     for section_index, section in enumerate(script["sections"]):
         film_index = section["film"]
         film = films[film_index]
@@ -962,6 +971,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             timeline.append({"start": offset, "duration": seconds, "type": "review-preview", "film": film["title"],
                              "source_start": preview["start"], "shots": [preview], "narration": False})
             parts.append(preview_path)
+            if not preview.get("muted", True) and not preview.get("still"):
+                pending_tail = (source, preview["start"] + seconds)
             used_video_sources.add(str(source))
             offset += seconds
             note_visual_beat(selector, seconds, still=bool(preview.get("still")))
@@ -1019,6 +1030,13 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                     for pool in pools:
                         pool[:] = [source for source in pool if str(source) not in failed]
                     speech_video(trailer, audio, chosen, path, None, work / f"render-{len(parts):03}")
+            if pending_tail and section["kind"] != "subscribe" and os.getenv("SMOOTH_AUDIO", "true") != "false":
+                # The scene just shown keeps sounding softly under the narrator's first second, then fades.
+                try:
+                    l_cut(path, *pending_tail)
+                except (PipelineError, OSError, RuntimeError, ValueError):
+                    pass
+            pending_tail = None
             if section["kind"] in {"subscribe", "outro"} and re.search(r"\bsubscribe\b", text, re.IGNORECASE):
                 add_cta_animation(path, text, aligned[(section_index, paragraph_index)], work / f"cta-animation-{len(parts):03}")
             used_video_sources.update(str(cut.get("source", trailer)) for cut in chosen if not cut.get("image"))
@@ -1049,6 +1067,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                                      "film": film["title"], "source_start": native_clip["start"],
                                      "source": native_clip["source"], "native_verified": True, "separated": False})
                     parts.append(native_path)
+                    if not native_clip.get("muted", False):
+                        pending_tail = (Path(native_clip["source"]), native_clip["start"] + seconds)
                     used_video_sources.add(native_clip["source"])
                     offset += seconds
             elif not native_plan:
@@ -1344,7 +1364,7 @@ def warm(stage: str, part: str, title: str, brief: str, movies: str, work: Path,
         return parts
     if stage == "script":
         writer = Writer(cache_dir=ctx.work / "script-sections")
-        result = writer.write(title, brief, films, target_seconds=ctx.spec.target, trailer_seconds=ctx.expected_breaks, only={part}, automatic=ctx.spec.automatic)
+        result = writer.write(title, brief, films, word_scale=_speed_words(), target_seconds=ctx.spec.target, trailer_seconds=ctx.expected_breaks, only={part}, automatic=ctx.spec.automatic)
         writer.unload()
         print(f"Warmed script section {part}.", flush=True)
         voiced = warm_voice(result.get("sections", []), ctx)
@@ -1364,6 +1384,12 @@ def warm(stage: str, part: str, title: str, brief: str, movies: str, work: Path,
               f"optional extras deferred to the global download rounds.", flush=True)
         return {"trailer": str(trailer), "extra": str(extra) if extra else ""}
     raise PipelineError(f"Unknown stage {stage!r}.")
+
+
+def _speed_words() -> float:
+    """Faster narration gets proportionally more words, so the requested length still fills."""
+    from .sound_design import narration_speed
+    return narration_speed()
 
 
 def main():

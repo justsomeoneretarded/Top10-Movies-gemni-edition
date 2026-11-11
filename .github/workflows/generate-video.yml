@@ -50,6 +50,16 @@ on:
           - original
           - turbo
           - nano
+      narration_speed:
+        description: "Narration speed (1 = natural, 1.2 = about 20% faster)"
+        required: true
+        type: choice
+        default: '1.2'
+        options:
+          - '1'
+          - '1.1'
+          - '1.2'
+          - '1.3'
       duration_minutes:
         description: "Video length in minutes (±25%); Auto chooses a sensible length for this list"
         required: true
@@ -116,6 +126,9 @@ on:
       tts_model:
         type: string
         default: original
+      narration_speed:
+        type: string
+        default: '1.2'
       duration_minutes:
         type: string
         default: Auto
@@ -147,6 +160,7 @@ jobs:
       MOVIE_LIST: ${{ inputs.movies }}
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
+      NARRATION_SPEED: "${{ inputs.narration_speed }}"
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
@@ -236,6 +250,7 @@ jobs:
       MOVIE_LIST: ${{ inputs.movies }}
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
+      NARRATION_SPEED: "${{ inputs.narration_speed }}"
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
@@ -394,6 +409,7 @@ jobs:
       MOVIE_LIST: ${{ inputs.movies }}
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
+      NARRATION_SPEED: "${{ inputs.narration_speed }}"
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
@@ -517,6 +533,7 @@ jobs:
       MOVIE_LIST: ${{ inputs.movies }}
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
+      NARRATION_SPEED: "${{ inputs.narration_speed }}"
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
@@ -639,6 +656,7 @@ jobs:
       MOVIE_LIST: ${{ inputs.movies }}
       VIDEO_TYPE: ${{ inputs.content_type }}
       NARRATOR: ${{ inputs.narrator }}
+      NARRATION_SPEED: "${{ inputs.narration_speed }}"
       TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}

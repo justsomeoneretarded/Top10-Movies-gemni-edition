@@ -7,7 +7,7 @@ def test_workflow_has_checked_4k_option_and_never_interpolates_inputs_in_shell()
     # BaseLoader preserves GitHub's YAML 'on' key instead of interpreting it as a boolean.
     data = yaml.load(Path(".github/workflows/generate-video.yml").read_text(), Loader=yaml.BaseLoader)
     inputs = data["on"]["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"title", "description", "movies", "content_type", "narrator", "tts_model", "duration_minutes", "try_4k", "ai_backend"}
+    assert set(inputs) == {"title", "description", "movies", "content_type", "narrator", "tts_model", "narration_speed", "duration_minutes", "try_4k", "ai_backend"}
     assert "fact_check" not in inputs
     assert inputs["content_type"]["type"] == "choice"
     assert inputs["content_type"]["default"] == "Movies"

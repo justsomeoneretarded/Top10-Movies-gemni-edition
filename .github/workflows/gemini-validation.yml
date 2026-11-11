@@ -38,6 +38,8 @@ jobs:
           python-version: '3.11'
       - name: Install small API-check dependencies
         run: python -m pip install requests Pillow
+      - name: FFmpeg for the uploaded-video check
+        run: sudo apt-get install -y -qq ffmpeg >/dev/null || true
       - name: Check configured API access without exposing credentials
         run: python -m scripts.gemini_preflight
       - name: Test real structured text, frame vision and verified source identity

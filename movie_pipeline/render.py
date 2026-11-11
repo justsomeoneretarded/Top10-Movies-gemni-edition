@@ -310,8 +310,9 @@ def trailer_video(source: Path, start: float, seconds: float, output: Path, *,
         f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={width}:{height},setsar=1,{footage_grade()},setpts=PTS-STARTPTS,fps={FPS},"
         f"{hold}tpad=stop_mode=clone:stop={frames},{motion}{_reveal_filter(width, height, reveal_style) if reveal else ''}setpts=N/({FPS}*TB)[v];"
-        f"[{audio_index}:a]asetpts=PTS-STARTPTS,afade=t=in:d=0.08,"
-        f"afade=t=out:st={max(0,actual-0.15)}:d=0.15,loudnorm=I=-18:TP=-2:LRA=9,apad[a]"
+        f"[{audio_index}:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-2:LRA=7,"
+        f"afade=t=in:d={min(0.35, actual*0.15):.3f}:curve=qsin,"
+        f"afade=t=out:st={max(0, actual-min(0.6, actual*0.2)):.3f}:d={min(0.6, actual*0.2):.3f}:curve=qsin,apad[a]"
     )
     video = "[v]"
     if label:
@@ -341,6 +342,29 @@ def _reveal_filter(width: int, height: int, style: str = "zoom_in") -> str:
     entry = GENRE_ENTRY.get(os.getenv("VIDEO_GENRE", "").strip().lower())
     dip = f"fade=t=in:st=0:d={entry[1]}:color={entry[0]}," if entry else ""
     return _hold_motion(5*FPS, 0, width, height, style)+","+dip
+
+
+def l_cut(part: Path, source: Path, source_end: float, *, tail: float = 1.1, gain: float = 0.42):
+    """Let a clip's own sound carry on softly under the first ``tail`` seconds of ``part`` and fade away.
+
+    Used where a scene with sound is followed by narration, so the scene's audio eases out under
+    the narrator instead of stopping dead. Video is copied; only the audio is remixed.
+    """
+    streams = probe(part).get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), {})
+    length = float(video.get("duration") or duration(part))
+    tail = min(tail, length * 0.4, max(0.0, duration(source) - source_end))
+    if tail < 0.3 or not any(s.get("codec_type") == "audio" for s in probe(source).get("streams", [])):
+        return False
+    temp = part.with_name(part.stem + ".lcut" + part.suffix)
+    ffmpeg("-i", part, "-ss", source_end, "-t", tail, "-i", source, "-filter_complex",
+           f"[1:a]aresample=48000,aformat=channel_layouts=stereo,loudnorm=I=-18:TP=-2:LRA=7,"
+           f"afade=t=out:d={tail:.3f}:curve=qsin,volume={gain}[tail];"
+           f"[0:a]aresample=48000,aformat=channel_layouts=stereo[base];"
+           f"[base][tail]amix=inputs=2:duration=longest:normalize=0,apad=whole_dur={length:.4f},atrim=end={length:.4f}[a]",
+           "-map", "0:v", "-map", "[a]", "-c:v", "copy", *LOSSLESS_AUDIO, temp)
+    temp.replace(part)
+    return True
 
 
 def j_cut(part: Path, source: Path, source_start: float, *, lead: float = 0.6, gain: float = 0.55):

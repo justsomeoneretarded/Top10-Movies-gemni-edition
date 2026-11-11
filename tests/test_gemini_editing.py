@@ -509,3 +509,36 @@ def test_edit_report_never_claims_an_unreviewed_source(monkeypatch, tmp_path):
     one, two = report["titles"]
     assert one["sources"][0]["verified"] == 1 and one["script_saw_scenes"] is True
     assert two["sources"][0]["status"] == "not reviewed" and two["script_saw_scenes"] is False
+
+
+def test_rejected_youtube_link_falls_back_to_an_uploaded_copy(monkeypatch, tmp_path):
+    class TwoRoutes(Client):
+        def generate_json(self, prompt, schema, **kwargs):
+            self.calls.append((prompt, schema, kwargs))
+            if "youtube_url" in kwargs:
+                raise gemini.GeminiUnavailable("request_rejected (HTTP 400: video not supported)")
+            return {"windows": [scene(5, 12)], "review": {"suitable": True, "variety": .7, "problem": "none"}}
+
+        def upload_video(self, path, timeout=300):
+            self.uploaded = path
+            return {"uri": "https://generativelanguage.googleapis.com/v1beta/files/x", "mime_type": "video/mp4"}
+
+    client = TwoRoutes()
+    use_client(monkeypatch, client)
+    monkeypatch.setattr(editing, "duration", lambda path: 45)
+    monkeypatch.setattr(editing, "_proxy_copy", lambda source: tmp_path / "proxy.mp4")
+    source = source_file(tmp_path)
+    analysis = editing.analyse_source(source)
+    assert analysis and len(analysis["windows"]) == 1
+    assert client.calls[1][2]["video_file"]["mime_type"] == "video/mp4" and client.uploaded == tmp_path / "proxy.mp4"
+    assert editing.REPORT[str(source)]["route"] == "uploaded_file"
+
+
+def test_quota_errors_do_not_trigger_uploads(monkeypatch, tmp_path):
+    client = Client(error=gemini.GeminiUnavailable("quota_exhausted"))
+    client.upload_video = lambda *a, **k: pytest.fail("uploaded after a quota error")
+    use_client(monkeypatch, client)
+    monkeypatch.setattr(editing, "duration", lambda path: 45)
+    source = source_file(tmp_path)
+    assert editing.analyse_source(source) is None
+    assert "quota_exhausted" in editing.REPORT[str(source)]["reason"]

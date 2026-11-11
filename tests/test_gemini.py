@@ -464,3 +464,13 @@ def test_exhausted_primary_service_failure_uses_modern_free_fallback(monkeypatch
     rows = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
     assert any(row["reason"] == "preferred_model_service_unavailable" for row in rows)
     assert "private body" not in json.dumps(rows)
+
+
+def test_rejections_report_the_code_and_known_problem_words_but_never_the_text(tmp_path):
+    provider, _ = client(Response({"error": {"status": "INVALID_ARGUMENT",
+                                             "message": "YouTube video private response test-gemini-secret is not supported"}}, 400))
+    with pytest.raises(gemini.GeminiUnavailable) as raised:
+        provider.generate_json("Example", SCHEMA)
+    assert "HTTP 400: INVALID_ARGUMENT" in str(raised.value) and "youtube" in str(raised.value)
+    rows = json.dumps([json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()])
+    assert "private response" not in rows and "test-gemini-secret" not in rows
