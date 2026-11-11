@@ -8,6 +8,8 @@ import json
 import math
 import re
 from pathlib import Path
+import os
+
 import numpy as np
 from .core import ffmpeg, key, save_json, probe
 from . import gemini_editing
@@ -58,6 +60,10 @@ def candidates(selector,pool,shot_lookup,film):
         if not shots:
             continue
         visual_advice=gemini_editing.analyse_source(Path(source))
+        card=getattr(selector,"card_kind",lambda *_:None)
+        # Gemini's scene map, checked against this file's real cuts.
+        mapped=gemini_editing.verify_scenes(visual_advice,shots,lambda j,source=source:card(source,j) is not None)
+        genre=os.getenv("VIDEO_GENRE","")
         meaningful=_scores(selector,source,"A complete cinematic moment: a confrontation, physical comedy, chase, fight, crash, danger, fire or an emotional exchange.",len(shots))
         energetic=_scores(selector,source,"People visibly fighting, running from danger, shooting, a vehicle crash or an explosion.",len(shots))
         quiet=_scores(selector,source,"A static quiet view, an empty room or a person standing still.",len(shots))
@@ -96,10 +102,17 @@ def candidates(selector,pool,shot_lookup,film):
                 # non-card local candidates. Native boundaries still pass through
                 # _enrich/complete_window and _usable after selection.
                 adjustment,notes=gemini_editing.soft_rank(visual_advice,start,end)
+                scene=gemini_editing.scene_for(mapped,start,end)
+                # A verified scene Gemini rated highly is worth more than image matching alone.
+                if scene and scene.get("verified"):
+                    adjustment+=.10*scene["interest"]+(.04 if scene["complete"] else 0)
                 advice=({"visual_analysis":{"provider":visual_advice["provider"],
                          "cache":visual_advice["cache"],"score_adjustment":adjustment,
-                         "notes":notes}} if visual_advice else {})
+                         "notes":notes,
+                         "scene":({k:scene[k] for k in ("id","kind","energy","sound","complete","verified","description")} if scene else None)}} if visual_advice else {})
                 result.append({**advice,"source":str(source),"start":start,"duration":length,
+                               "opening_fit":gemini_editing.opening_fit(scene,genre),
+                               "scene_energy":(scene["energy"] if scene and scene.get("verified") else None),
                                "score":score+adjustment,"action_strength":strength,
                                "motion":float(np.mean([shots[j].get("motion",0) for j in indices])),
                                "film_index":None,"scene_index":i,"scene_end":end,
@@ -178,7 +191,7 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
     # Extend the opening only when actual semantic action evidence exists.
     energetic=sorted([{**clip,"film_index":i} for i,rows in options.items() for clip in rows
                       if clip["action_strength"]>.025 and clip["motion"]>4],
-                     key=lambda c:-(c["action_strength"]+c["score"]))
+                     key=lambda c:-(c["action_strength"]+c["score"]+.15*(c.get("scene_energy") or 0)))
     for candidate in energetic:
         if len(opening)>=2 or sum(c["duration"] for c in opening)>=12:
             break
@@ -209,7 +222,9 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
         wanted=min(5,1+int(sum(paragraph_seconds)//30),len(paragraph_seconds)+1)
         chosen=[]
         examined=0
-        for row in options.get(index,[]):
+        # The first clip chosen opens the review: prefer the genre's signature moment
+        # (a fight or chase for action, a complete joke for comedy) from Gemini's verified scenes.
+        for row in sorted(options.get(index,[]),key=lambda c:-(c["score"]+c.get("opening_fit",0))):
             if len(chosen)>=wanted or examined>=max(6,wanted*2):
                 break
             candidate={**row,"film_index":index}

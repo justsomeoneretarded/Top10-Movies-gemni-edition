@@ -19,6 +19,17 @@ Gemini advice does not bypass correct-title checks, source rejection, finite vid
 
 The default text/vision model is a current documented free-tier model. If that model returns a genuine unavailable-model response or a final read timeout, the provider may use the documented free Gemini 3.5 Flash-Lite alternative. Actual successful models and fallback events are reported separately from configured model/cache identity. Gemini requests run in one final production process after research, paced by default at one start every twelve seconds. Downloads and music remain parallel. Local mode keeps the original parallel planning/script/voice warm-ups.
 
+## Scene planning (Phase 1)
+
+Gemini now shapes the edit from what the footage actually contains:
+
+1. **Review before download.** For extra trailers and clips, Gemini watches the top two candidates by YouTube link before anything is downloaded. Talking heads, reactions, fan edits, slideshows and mostly-text videos are skipped; the rest are ordered by how much varied, usable footage they hold.
+2. **Scene map.** Every accepted source gets a timestamped map: what happens, kind (fight, chase, dialogue, comedy...), energy, useful sound, and whether the sequence is complete on its own. Each scene's start and end are checked against the downloaded file's real cuts; verified scenes are snapped to them, unverified ones are kept as hints only. A review made before download becomes the file's map without a second request.
+3. **Script knows the scenes.** The best verified scenes of each title are given to the writer, so narration describes situations the footage can show (it never presents a scene description as a fact).
+4. **Review openings.** The scene after each rank and title is chosen for the genre: a fight, chase or danger for action, a complete joke for comedy, a tense exchange for drama.
+
+**Honest reporting.** The run page shows a "Gemini edit review" notice: how many sources have scene maps, how many candidates were watched, rejected or could not be reviewed, and which sources were NOT Gemini-reviewed and why. The full detail is in `gemini-edit-report.json` in the output. Budget: up to 30 videos and 15 minutes of video analysis per run (`GEMINI_VIDEO_BUDGET_SECONDS`).
+
 ## Repository secrets
 
 Set these under **Settings → Secrets and variables → Actions**:

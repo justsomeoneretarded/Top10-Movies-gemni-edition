@@ -143,6 +143,35 @@ def _valid_cache(path: Path, primary_source: str, minimum_size: tuple[int,int]) 
         return False
 
 
+def _gemini_reviewed(ranked: list, film: dict, limit: int = 2) -> list:
+    """Let Gemini watch the top candidates before any is downloaded.
+
+    Unsuitable videos (talking heads, reactions, fan edits, slideshows) are dropped and the
+    rest are ordered by how much worthwhile, varied footage they contain. Candidates Gemini
+    could not review keep their place behind reviewed ones; nothing is claimed for them.
+    """
+    try:
+        from . import gemini, gemini_editing
+        if not gemini.enabled():
+            return ranked
+        reviewed, unreviewed = [], []
+        for position, row in enumerate(ranked):
+            info = row[4] if isinstance(row[4], dict) else {}
+            verdict = gemini_editing.review_candidate(row[2], info.get("duration") or 0, str(info.get("title", ""))) \
+                if position < limit else None
+            if verdict is None:
+                unreviewed.append(row)
+            elif verdict["suitable"]:
+                reviewed.append((verdict["worth"], row))
+            else:
+                print(f"Gemini review: skipping an extra video for {film.get('title')} ({verdict['problem']}).", flush=True)
+        reviewed.sort(key=lambda item: -item[0])
+        return [row for _, row in reviewed] + unreviewed
+    except Exception as exc:  # noqa: BLE001 -- the review is advice; downloads continue without it
+        print(f"Gemini source review unavailable ({type(exc).__name__}); using title and quality ranking.", flush=True)
+        return ranked
+
+
 def download_secondary(film: dict, root: Path, primary: Path, minimum_size: tuple[int,int],
                        *, existing: list[Path] | None = None, slot: int = 2) -> Path | None:
     """Fetch an optional slot from two to five, excluding accepted sources."""
@@ -232,6 +261,7 @@ def _download_secondary(film: dict, root: Path, primary: Path, minimum_size: tup
     # Prefer a useful single scene, then quality; uploader status is not a gate.
     ranked.sort(key=lambda row:(not (set(normalized(str(row[4].get('title',''))).split()) & {"clip","clips","scene","scenes"}),
                                 -row[0], row[1]))
+    ranked = _gemini_reviewed(ranked, film)
     for _quality_value,order,url,curated,info in ranked[:MAX_DOWNLOADS]:
         attempt = root / f'{primary.stem}-{suffix}-candidate-{order:02}.mp4'
         _clean_candidate(attempt)

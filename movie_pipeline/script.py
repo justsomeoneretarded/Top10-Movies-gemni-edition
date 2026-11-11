@@ -45,6 +45,9 @@ def film_facts(film: dict) -> dict:
              for c in film.get("cast_profiles", []) if isinstance(c, dict) and c.get("name")]
     if roles or film.get("cast"):
         facts["cast"] = roles or film.get("cast", [])
+    if film.get("available_scenes"):
+        # What our footage actually shows (Gemini's verified scene map), so words and pictures agree.
+        facts["available_scenes"] = list(film["available_scenes"])[:6]
     return facts
 
 
@@ -639,6 +642,11 @@ class Writer:
         else:
             style = (
                 "SECTION ROLE: ONE MOVIE/SHOW REVIEW ONLY. Stay with the current title. "
+                "When available_scenes is present, it lists what our footage of this title actually shows: "
+                "where the verified story allows, describe situations those scenes can illustrate (a pursuit, a "
+                "confrontation, a joke's setup), so the picture matches the words. It is visual guidance, not a "
+                "source of facts: never state anything only a scene description suggests, and never mention "
+                "scenes, footage, clips or trailers. "
                 "Start with the short announcement 'Number [rank]: [title].' Then tell the viewer something concrete "
                 "about what actually happens in its story. Its specific situation can convey the appeal without a separate verdict. "
                 "Choose the opening and order "

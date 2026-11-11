@@ -289,7 +289,7 @@ def setup_run(title: str, brief: str, movies: str, work: Path, output: Path, sta
     reference = voice_reference(narrator, Path(os.getenv("VOICE_DIR", "assets/voices")))
     # Include the resolver policy and writing model so stale identities/scripts are not reused.
     script_model = os.getenv("SCRIPT_MODEL", "gemma4:12b")
-    run_key = key("pipeline-v18-gemini-edition", title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
+    run_key = key("pipeline-v19-gemini-scene-plan", title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
     work = work / run_key
     work.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
@@ -386,6 +386,11 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     shot_lookup = {str(trailer): shots for trailer, shots in zip(trailers, shot_sets)}
     for i, source in enumerate(sources):
         source.update(film=films[i]["title"], role="primary")
+    from . import gemini as _gemini, gemini_editing
+    if _gemini.enabled():
+        # Primary trailers get their scene maps first, before reviews of extra candidates spend the budget.
+        for trailer in trailers:
+            gemini_editing.analyse_source(trailer)
     from .resource_budget import DownloadBudget, seed_sources
     seed_sources(Path("work/footage"),trailers)
     download_budget = DownloadBudget()
@@ -455,6 +460,34 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     per_title = "; ".join(f"{source.get('film', '?')} ({source.get('role', '?')}): {source.get('width')}x{source.get('height')}" for source in sources)
     notice("Footage", f"Export {width}x{height}; {len(sources)} trailers accepted; route: {download_access.routes()[0]}. {per_title}. "
            f"Elapsed {(time.time()-started)/60:.0f} min.")
+
+    # Gemini's scene maps, verified against each file's real cuts, are ready BEFORE the script is
+    # written: the writer sees what the footage can show, and the edit plan uses the same scenes.
+    scene_maps = {}
+    if _gemini.enabled():
+        for i, pool in enumerate(pools):
+            for source in pool:
+                analysis = gemini_editing.analyse_source(Path(source))
+                scene_maps[str(source)] = gemini_editing.verify_scenes(analysis, shot_lookup.get(str(source), []))
+            described = [line for source in pool for line in gemini_editing.scenes_for_writer(scene_maps[str(source)])]
+            if described:
+                films[i]["available_scenes"] = described[:6]
+    gemini_report = gemini_editing.edit_report(films, pools, scene_maps)
+    save_json(work / "gemini-edit-report.json", gemini_report)
+    save_json(output / "gemini-edit-report.json", gemini_report)
+    if not _gemini.enabled():
+        notice("Gemini edit review", "Not used: this run did not use Gemini (Local backend or no API key). "
+               "Sources, scenes and script were chosen by the local pipeline.", "warning")
+    else:
+        unmapped = [f"{row['title']}: {source['file']} ({source.get('reason', 'not reviewed')})"
+                    for row in gemini_report["titles"] for source in row["sources"] if source.get("status") != "scene map"]
+        notice("Gemini edit review",
+               f"Scene maps for {gemini_report['sources_mapped']} of {gemini_report['sources_total']} sources; "
+               f"{gemini_report['candidates_reviewed_before_download']} extra candidates watched before download "
+               f"({gemini_report['candidates_rejected_by_review']} rejected, {gemini_report['candidates_not_reviewed']} could not be reviewed); "
+               f"script saw scenes for {sum(row['script_saw_scenes'] for row in gemini_report['titles'])} of {len(films)} titles."
+               + (" NOT Gemini-reviewed: " + "; ".join(unmapped[:8]) if unmapped else ""),
+               "warning" if unmapped else "notice")
 
     writer = Writer(cache_dir=work / "script-sections")
     print(f"Script model: {writer.model}", flush=True)

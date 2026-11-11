@@ -18,6 +18,8 @@ def isolated_optional_state(monkeypatch):
     monkeypatch.setattr(editing, "_ATTEMPTED", set())
     monkeypatch.setattr(editing, "_FINGERPRINTS", {})
     monkeypatch.setattr(editing, "_VIDEO_DEADLINE", None)
+    monkeypatch.setattr(editing, "_URL_REVIEWS", {})
+    monkeypatch.setattr(editing, "REPORT", {})
     monkeypatch.setattr(scenes, "_DEADLINE", None)
     monkeypatch.setattr(scenes, "_READY", False)
     monkeypatch.setattr(scenes, "_LOCAL_VISION_READY", False)
@@ -122,14 +124,15 @@ def test_video_failure_or_unknown_duration_uses_no_advice(monkeypatch, tmp_path)
     assert len(client.calls) == 1  # never repeatedly retry an inaccessible public URL
 
 
-def test_video_requests_have_a_shared_twelve_source_budget(monkeypatch, tmp_path):
+def test_video_requests_have_a_shared_source_budget(monkeypatch, tmp_path):
     client = Client({"windows": [window()]})
     use_client(monkeypatch, client)
     monkeypatch.setattr(editing, "duration", lambda path: 45)
-    for number in range(13):
+    for number in range(editing.MAX_VIDEOS + 1):
         source = source_file(tmp_path, str(number), f"{number:011d}")
         editing.analyse_source(source)
-    assert len(client.calls) == 12
+    assert len(client.calls) == editing.MAX_VIDEOS
+    assert editing.REPORT[str(source)]["status"] == "not reviewed"  # the skipped source is reported as such
 
 
 def test_disabled_video_analysis_never_probes_or_calls_provider(monkeypatch, tmp_path):
@@ -251,7 +254,9 @@ def test_visual_hints_only_rerank_existing_fresh_noncard_candidates(monkeypatch)
     assert len(original) == len(enriched) == 1
     for field in ("start", "duration", "action_strength", "scene_index", "cues", "muted"):
         assert enriched[0][field] == original[0][field]
-    assert 0 < enriched[0]["score"]-original[0]["score"] <= .055
+    # A scene verified against the local cuts may raise an existing candidate by up to about 0.2;
+    # it still never creates a window, a cut or a cue.
+    assert 0 < enriched[0]["score"]-original[0]["score"] <= .2
     assert enriched[0]["visual_analysis"]["notes"]
 
 
@@ -430,3 +435,77 @@ def test_advisory_sources_cover_all_titles_before_optional_extras():
         Path("a-primary"), Path("b-primary"), Path("c-primary"),
         Path("a-extra-2"), Path("c-extra-2"), Path("a-extra-3")]
     assert editing.source_rounds([]) == []
+
+
+# ---- Scene planning: review before download, verified scene maps, review openings, honest report ----
+def scene(start, end, kind="fight", **kwargs):
+    return window(start, end, kind=kind, energy=.8, sound="impact", complete=True, **kwargs)
+
+
+def test_candidates_are_watched_before_download_and_unsuitable_ones_rejected(monkeypatch):
+    good = Client({"windows": [scene(5, 12), scene(20, 30, kind="chase")],
+                   "review": {"suitable": True, "variety": .8, "problem": "none"}})
+    use_client(monkeypatch, good)
+    verdict = editing.review_candidate("https://www.youtube.com/watch?v=aaaaaaaaaaa", 120, "Film - Car Chase Scene")
+    assert verdict["suitable"] and verdict["worth"] > .5 and len(good.calls) == 1
+    assert good.calls[0][2]["youtube_url"].endswith("aaaaaaaaaaa")
+    assert editing.review_candidate("https://www.youtube.com/watch?v=aaaaaaaaaaa", 120)["worth"] == verdict["worth"]
+    assert len(good.calls) == 1  # one request per video
+    bad = Client({"windows": [scene(5, 12, kind="dialogue")],
+                  "review": {"suitable": False, "variety": .1, "problem": "talking_heads"}})
+    use_client(monkeypatch, bad)
+    rejected = editing.review_candidate("https://www.youtube.com/watch?v=bbbbbbbbbbb", 200)
+    assert rejected["suitable"] is False and rejected["worth"] == 0
+    assert editing.REPORT["review:https://www.youtube.com/watch?v=bbbbbbbbbbb"]["problem"] == "talking_heads"
+
+
+def test_a_failed_review_is_reported_as_not_reviewed(monkeypatch):
+    use_client(monkeypatch, Client(error=gemini.GeminiUnavailable("quota_exhausted")))
+    assert editing.review_candidate("https://www.youtube.com/watch?v=ccccccccccc", 90) is None
+    entry = editing.REPORT["review:https://www.youtube.com/watch?v=ccccccccccc"]
+    assert entry["status"] == "not reviewed" and "quota_exhausted" in entry["reason"]
+
+
+def test_review_before_download_becomes_the_downloaded_files_scene_map(monkeypatch, tmp_path):
+    client = Client({"windows": [scene(5, 12)], "review": {"suitable": True, "variety": .7, "problem": "none"}})
+    use_client(monkeypatch, client)
+    editing.review_candidate("https://www.youtube.com/watch?v=abcdefghijk", 45)
+    monkeypatch.setattr(editing, "duration", lambda path: 45.4)
+    analysis = editing.analyse_source(source_file(tmp_path))
+    assert analysis["cache"] == "review" and len(client.calls) == 1  # no second request for the same video
+
+
+def test_scene_times_are_verified_against_local_cuts_and_cards_dropped():
+    shots = [{"start": 0, "end": 4}, {"start": 4, "end": 10.2}, {"start": 10.2, "end": 16.5}, {"start": 16.5, "end": 30},
+             {"start": 30, "end": 36}]
+    analysis = {"windows": [scene(10, 16), scene(19, 24, kind="dialogue"), scene(30.2, 35.8, kind="establishing"),
+                            window(0, 4, title_card=True)]}
+    mapped = editing.verify_scenes(analysis, shots, lambda index: index == 4)
+    assert [(s["id"], s["verified"]) for s in mapped] == [("S1", True), ("S2", False)]  # card scene and title card dropped
+    assert (mapped[0]["start"], mapped[0]["end"]) == (10.2, 16.5)  # snapped to the real cuts
+    assert (mapped[1]["start"], mapped[1]["end"]) == (19, 24)      # unverified: kept only as a hint
+    assert editing.scene_for(mapped, 10.2, 16.5)["id"] == "S1" and editing.scene_for(mapped, 0, 4) is None
+    assert editing.scenes_for_writer(mapped) == ["fight: A tense exchange beside a bridge."]  # verified scenes only
+
+
+def test_review_opening_prefers_the_genres_signature_scene():
+    fight = {**scene(0, 8), "verified": True}
+    talk = {**scene(0, 8, kind="dialogue"), "verified": True}
+    joke = {**scene(0, 8, kind="comedy"), "verified": True}
+    assert editing.opening_fit(fight, "action") > editing.opening_fit(talk, "action")
+    assert editing.opening_fit(joke, "comedy") > editing.opening_fit(fight, "comedy")
+    assert editing.opening_fit(talk, "drama") > editing.opening_fit(joke, "drama")
+    assert editing.opening_fit({**fight, "verified": False}, "action") < editing.opening_fit(fight, "action")
+    assert editing.opening_fit(None, "action") == 0
+
+
+def test_edit_report_never_claims_an_unreviewed_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(gemini, "enabled", lambda: True)
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    editing.REPORT[str(a)] = {"status": "scene map", "scenes": 2}
+    maps = {str(a): [{**scene(0, 8), "verified": True, "id": "S1"}, {**scene(9, 15), "verified": False, "id": "S2"}]}
+    report = editing.edit_report([{"title": "One", "available_scenes": ["fight: x"]}, {"title": "Two"}], [[a], [b]], maps)
+    assert report["sources_mapped"] == 1 and report["sources_total"] == 2
+    one, two = report["titles"]
+    assert one["sources"][0]["verified"] == 1 and one["script_saw_scenes"] is True
+    assert two["sources"][0]["status"] == "not reviewed" and two["script_saw_scenes"] is False
