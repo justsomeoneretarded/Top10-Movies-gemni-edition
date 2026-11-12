@@ -197,6 +197,29 @@ _FAILURES: dict[str, int] = {}
 VIDEO_GAP_SECONDS = 20.0  # space video requests so the free per-minute token limit can recover
 
 
+def video_models(client) -> list[str]:
+    """Flash-Lite first for video (its own free daily allowance), keeping the main model for writing."""
+    first = os.getenv("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite").strip() or "gemini-3.5-flash-lite"
+    return list(dict.fromkeys([first, getattr(client, "vision_model", first)]))
+
+
+def video_json(client, prompt: str, length: float, **media) -> dict:
+    """Ask for the scene map with the video model; when that model's quota is used up or it is
+    unavailable, ask the other free model instead. Other errors are raised unchanged."""
+    models = video_models(client)
+    for index, model in enumerate(models):
+        try:
+            return client.generate_json(prompt, VIDEO_SCHEMA, model=model, video_duration=length,
+                                        max_output_tokens=4096, thinking="low", **media)
+        except gemini.GeminiUnavailable as error:
+            text = str(error)
+            if index + 1 < len(models) and ("quota" in text or "model_unavailable" in text):
+                gemini.record_event("video_analysis", "gemini", "model_switch", text[:40], details={"to": models[index + 1]})
+                continue
+            raise
+    raise gemini.GeminiUnavailable("no_video_model")
+
+
 def _video_pause():
     wait = _LAST_VIDEO_REQUEST[0] + VIDEO_GAP_SECONDS - time.monotonic()
     if wait > 0:
@@ -282,9 +305,7 @@ def review_candidate(url: str, length: float, title: str = "") -> dict | None:
     _ATTEMPTED.add(url)
     try:
         _video_pause()
-        response = gemini.get_client().generate_json(
-            scene_prompt(length), VIDEO_SCHEMA, youtube_url=url, video_duration=length,
-            max_output_tokens=4096, thinking="low")
+        response = video_json(gemini.get_client(), scene_prompt(length), length, youtube_url=url)
         windows = validate_windows(response, length)
         review = validate_review(response)
         usable = [w for w in windows if not w["title_card"]]
@@ -462,9 +483,7 @@ def analyse_source(source: Path) -> dict | None:
         route = "youtube_link"
         _video_pause()
         try:
-            response = client.generate_json(
-                prompt, VIDEO_SCHEMA, youtube_url=url, video_duration=actual_duration,
-                max_output_tokens=4096, thinking="low")
+            response = video_json(client, prompt, actual_duration, youtube_url=url)
         except gemini.GeminiUnavailable as error:
             # The link route failed (rejected link, restricted video...): send Gemini the downloaded file itself.
             if "quota" in str(error) or "authentication" in str(error):
@@ -472,9 +491,7 @@ def analyse_source(source: Path) -> dict | None:
             route = "uploaded_file"
             uploaded = client.upload_video(_proxy_copy(source), timeout=300)
             _video_pause()
-            response = client.generate_json(
-                prompt, VIDEO_SCHEMA, video_file=uploaded, video_duration=actual_duration,
-                max_output_tokens=4096, thinking="low")
+            response = video_json(client, prompt, actual_duration, video_file=uploaded)
         windows = validate_windows(response, actual_duration)
         if not windows:
             gemini.record_event("video_analysis", "gemini", "fallback", "no valid visual windows")

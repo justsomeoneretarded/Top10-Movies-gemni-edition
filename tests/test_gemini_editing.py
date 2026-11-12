@@ -557,3 +557,26 @@ def test_a_temporarily_busy_service_gets_one_later_retry(monkeypatch, tmp_path):
     client.error = None
     client.response = {"windows": [scene(5, 12)], "review": {"suitable": True, "variety": .7, "problem": "none"}}
     assert editing.analyse_source(source)["windows"]  # the second attempt later in the run succeeds
+
+
+def test_video_uses_flash_lite_first_and_switches_model_when_its_quota_is_used(monkeypatch, tmp_path):
+    class Quota(Client):
+        vision_model = "gemini-3.8-flash"
+
+        def generate_json(self, prompt, schema, **kwargs):
+            self.calls.append((prompt, schema, kwargs))
+            if kwargs["model"] == "gemini-3.5-flash-lite":
+                raise gemini.GeminiUnavailable("quota_exhausted")
+            return {"windows": [scene(5, 12)], "review": {"suitable": True, "variety": .7, "problem": "none"}}
+
+    client = Quota()
+    use_client(monkeypatch, client)
+    monkeypatch.setattr(editing, "duration", lambda path: 45)
+    assert editing.analyse_source(source_file(tmp_path))["windows"]
+    assert [call[2]["model"] for call in client.calls] == ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
+
+
+def test_sound_alike_names_pass_the_speech_check():
+    from movie_pipeline.voice import speech_check
+    assert speech_check("Number 5: Dredd.", [{"start": 0, "end": 2, "text": "number five dread"}])["accepted"]
+    assert not speech_check("Number 5: Dredd.", [{"start": 0, "end": 2, "text": "number five bread"}])["accepted"]

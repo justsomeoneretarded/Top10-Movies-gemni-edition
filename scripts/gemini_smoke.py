@@ -75,7 +75,8 @@ def main():
     video_schema = {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
     for name, kwargs, schema, prompt in (
             ("youtube_simple", {}, video_schema, "Summarize this video in one sentence."),
-            ("youtube_scene_map", {}, gemini_editing.VIDEO_SCHEMA, gemini_editing.scene_prompt(60))):
+            ("youtube_scene_map", {"model": gemini_editing.video_models(client)[0]}, gemini_editing.VIDEO_SCHEMA,
+             gemini_editing.scene_prompt(60))):
         try:
             value = client.generate_json(prompt, schema, youtube_url="https://www.youtube.com/watch?v=9hE5-98ZeCg",
                                          video_duration=60, max_output_tokens=4096, thinking="low", **kwargs)
