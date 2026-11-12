@@ -9,6 +9,7 @@ from movie_pipeline.core import (
     selected_narrator,
     voice_reference,
 )
+from movie_pipeline.gemini import _keys as _gemini_keys
 from movie_pipeline.timing import workflow_duration
 from movie_pipeline.video_settings import download_ceiling
 
@@ -16,7 +17,7 @@ from movie_pipeline.video_settings import download_ceiling
 def gemini_configured() -> bool:
     """A selected cloud route can research identities without a TMDB token."""
     return (os.getenv("AI_BACKEND", "gemini").strip().lower() != "local"
-            and bool((os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API") or "").strip()))
+            and bool(_gemini_keys()))
 
 
 def main() -> int:

@@ -74,30 +74,34 @@ def main() -> int:
         _save(report)
         print("Gemini preflight: Local backend selected.", flush=True)
         return 0
-    api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API") or "").strip()
-    if not api_key:
+    from movie_pipeline.gemini import _keys
+    keys = _keys()
+    if not keys:
         report["authentication"] = "missing-key"
         return _local_fallback(report)
-    request = urllib.request.Request(
-        "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
-        headers={"x-goog-api-key": api_key, "Accept": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read(2_000_001))
-        if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
-            report["authentication"] = "invalid-response"
-            return _local_fallback(report)
-    except urllib.error.HTTPError as exc:
-        report["authentication"] = (
-            "invalid-or-denied" if exc.code in (401, 403) else
-            "rate-limited" if exc.code == 429 else "service-unavailable"
+    payload, failure = None, "invalid-response"
+    for number, api_key in enumerate(keys, 1):
+        # Any working key is enough: the run switches keys when one's quota is used up.
+        request = urllib.request.Request(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+            headers={"x-goog-api-key": api_key, "Accept": "application/json"},
         )
-        return _local_fallback(report)
-    except Exception:
-        # Transport errors may contain the request headers or URL: never print
-        # exceptions, response bodies, request objects, or credential values.
-        report["authentication"] = "network-or-response-unavailable"
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                payload = json.loads(response.read(2_000_001))
+            if isinstance(payload, dict) and isinstance(payload.get("models"), list):
+                report["keys_configured"], report["verified_key_number"] = len(keys), number
+                break
+            payload, failure = None, "invalid-response"
+        except urllib.error.HTTPError as exc:
+            failure = ("invalid-or-denied" if exc.code in (401, 403) else
+                       "rate-limited" if exc.code == 429 else "service-unavailable")
+        except Exception:
+            # Transport errors may contain the request headers or URL: never print
+            # exceptions, response bodies, request objects, or credential values.
+            failure = "network-or-response-unavailable"
+    if payload is None:
+        report["authentication"] = failure
         return _local_fallback(report)
     available = {}
     for item in payload["models"]:

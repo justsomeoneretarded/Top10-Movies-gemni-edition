@@ -474,3 +474,26 @@ def test_rejections_report_the_code_and_known_problem_words_but_never_the_text(t
     assert "HTTP 400: INVALID_ARGUMENT" in str(raised.value) and "youtube" in str(raised.value)
     rows = json.dumps([json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()])
     assert "private response" not in rows and "test-gemini-secret" not in rows
+
+
+def test_a_used_up_key_switches_to_the_next_one(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_API_KEY_2", "second-test-key")
+    monkeypatch.setattr(gemini, "_KEY_INDEX", [0])
+    quota = Response({"error": {"status": "RESOURCE_EXHAUSTED", "details": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}],
+                                "message": "Quota exceeded per_day"}}, 429)
+    provider, session = client(quota, Response(answer()))
+    provider._fixed_key = ""
+    assert provider.generate_json("Example", SCHEMA) == {"answer": "ok"}
+    keys = [call[1]["headers"]["x-goog-api-key"] for call in session.calls]
+    assert keys[-1] == "second-test-key" and keys[0] != "second-test-key"
+
+
+def test_without_a_spare_key_the_quota_error_is_raised(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY_2", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY_3", raising=False)
+    monkeypatch.setattr(gemini, "_KEY_INDEX", [0])
+    quota = Response({"error": {"message": "Quota exceeded per_day"}}, 429)
+    provider, _ = client(quota)
+    provider._fixed_key = ""
+    with pytest.raises(gemini.GeminiUnavailable, match="quota"):
+        provider.generate_json("Example", SCHEMA)

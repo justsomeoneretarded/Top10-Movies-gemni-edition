@@ -165,6 +165,8 @@ jobs:
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_2 || secrets.GEMINI_API_KEY_2 }}
+      GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_3 || secrets.GEMINI_API_KEY_3 }}
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
@@ -255,6 +257,8 @@ jobs:
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_2 || secrets.GEMINI_API_KEY_2 }}
+      GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_3 || secrets.GEMINI_API_KEY_3 }}
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
@@ -414,6 +418,8 @@ jobs:
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_2 || secrets.GEMINI_API_KEY_2 }}
+      GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_3 || secrets.GEMINI_API_KEY_3 }}
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
@@ -538,6 +544,8 @@ jobs:
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_2 || secrets.GEMINI_API_KEY_2 }}
+      GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_3 || secrets.GEMINI_API_KEY_3 }}
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}
@@ -661,6 +669,8 @@ jobs:
       # Existing GEMINI_API secret is preferred; GEMINI_API_KEY is a compatible alias.
       AI_BACKEND: ${{ inputs.ai_backend == 'Local' && 'local' || 'gemini' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_2 || secrets.GEMINI_API_KEY_2 }}
+      GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_3 || secrets.GEMINI_API_KEY_3 }}
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}
       GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       GEMINI_RESEARCH_MODEL: ${{ vars.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash' }}

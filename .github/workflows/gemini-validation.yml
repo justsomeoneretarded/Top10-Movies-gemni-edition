@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 12
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API || secrets.GEMINI_API_KEY }}
+      GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_2 || secrets.GEMINI_API_KEY_2 }}
+      GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_3 || secrets.GEMINI_API_KEY_3 }}
       AI_BACKEND: gemini
       GEMINI_RESEARCH_MODE: public_sources
       GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL || 'gemini-3.8-flash' }}

@@ -58,8 +58,32 @@ class _Budget:
 _BUDGET = _Budget()
 
 
+def _keys() -> list[str]:
+    """Every configured key, in order: the main key, then GEMINI_API_KEY_2 / _3 (or GEMINI_API_2 / _3)."""
+    names = (("GEMINI_API_KEY", "GEMINI_API"), ("GEMINI_API_KEY_2", "GEMINI_API_2"), ("GEMINI_API_KEY_3", "GEMINI_API_3"))
+    keys = [(os.getenv(a) or os.getenv(b) or "").strip() for a, b in names]
+    return list(dict.fromkeys(key for key in keys if key))
+
+
+_KEY_INDEX = [0]  # which key is in use; shared by every client in this process
+
+
 def _key():
-    return (os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API") or "").strip()
+    keys = _keys()
+    return keys[min(_KEY_INDEX[0], len(keys) - 1)] if keys else ""
+
+
+def _switch_key(reason: str) -> bool:
+    """Move to the next key after the current one's free quota is used up or it is rejected."""
+    keys = _keys()
+    if _KEY_INDEX[0] + 1 >= len(keys):
+        return False
+    _KEY_INDEX[0] += 1
+    _BUDGET.blocked = ""
+    _BUDGET.blocked_models.clear()
+    record_event("provider", "gemini", "key_switch", reason[:40], details={"key_number": _KEY_INDEX[0] + 1})
+    print(f"Gemini key {_KEY_INDEX[0]} {reason.split(' ')[0]}; switching to key {_KEY_INDEX[0] + 1}.", flush=True)
+    return True
 
 
 def enabled():
@@ -104,7 +128,7 @@ def _number(name, default, minimum, maximum):
 
 def _redact(value):
     value = str(value)
-    for secret in (_key(), os.getenv("GEMINI_API_KEY", ""), os.getenv("GEMINI_API", "")):
+    for secret in (*_keys(), os.getenv("GEMINI_API_KEY", ""), os.getenv("GEMINI_API", "")):
         if secret:
             value = value.replace(secret, "[redacted]")
     value = re.sub(r"AIza[A-Za-z0-9_-]{20,}", "[redacted]", value)
@@ -326,8 +350,8 @@ class GeminiClient:
     def __init__(self, api_key=None, session=None):
         if os.getenv("AI_BACKEND", "gemini").strip().lower() == "local":
             raise _unavailable("gemini_disabled_or_key_missing")
-        self._api_key = (api_key or _key()).strip()
-        if not self._api_key:
+        self._fixed_key = (api_key or "").strip()
+        if not (self._fixed_key or _key()):
             raise _unavailable("gemini_disabled_or_key_missing")
         for name, model in _models().items():
             setattr(self, name, _ACTUAL_MODELS.get(model, model))
@@ -335,7 +359,22 @@ class GeminiClient:
         self.research_mode = _research_mode()
         self.session = session if session is not None else requests.Session()
 
+    @property
+    def _api_key(self):
+        return self._fixed_key or _key()
+
     def _request(self, model, payload, stage, video_seconds=0.0):
+        """Send the request; when the current key's quota is used up or the key is rejected,
+        repeat it with the next configured key."""
+        while True:
+            try:
+                return self._request_once(model, payload, stage, video_seconds)
+            except GeminiUnavailable as error:
+                text = str(error)
+                if self._fixed_key or not ("quota_exhausted" in text or "authentication" in text) or not _switch_key(text):
+                    raise
+
+    def _request_once(self, model, payload, stage, video_seconds=0.0):
         _check_model(model, FREE_MODELS)
         retries = int(_number("GEMINI_MAX_RETRIES", 1, 0, 2))
         max_wait = 30

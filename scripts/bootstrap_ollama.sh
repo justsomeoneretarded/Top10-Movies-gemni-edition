@@ -19,7 +19,7 @@ esac
 
 # Gemini jobs keep a healthy fallback server, but download the script model only
 # if a cloud call actually needs the local Writer. Explicit Local remains eager.
-if [ "${AI_BACKEND:-gemini}" != local ] && [ -n "${GEMINI_API_KEY:-${GEMINI_API:-}}" ]; then
+if [ "${AI_BACKEND:-gemini}" != local ] && [ -n "${GEMINI_API_KEY:-${GEMINI_API:-}}${GEMINI_API_KEY_2:-${GEMINI_API_2:-}}${GEMINI_API_KEY_3:-${GEMINI_API_3:-}}" ]; then
   mode=serve-only
 fi
 
