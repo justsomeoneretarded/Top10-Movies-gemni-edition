@@ -19,7 +19,7 @@ from .core import duration, save_json
 
 VERSION = 2
 MAX_WINDOWS = 24
-MAX_VIDEOS = 30
+MAX_VIDEOS = 40
 KINDS = ("fight", "chase", "shootout", "explosion", "stunt", "danger", "confrontation", "dialogue",
          "emotional", "comedy", "romance", "establishing", "montage", "other")
 SOUNDS = ("dialogue", "impact", "music_only", "quiet")
@@ -192,6 +192,29 @@ def validate_windows(data, length: float) -> list[dict]:
 
 
 _URL_REVIEWS: dict[str, dict] = {}
+_LAST_VIDEO_REQUEST = [0.0]
+_FAILURES: dict[str, int] = {}
+VIDEO_GAP_SECONDS = 20.0  # space video requests so the free per-minute token limit can recover
+
+
+def _video_pause():
+    wait = _LAST_VIDEO_REQUEST[0] + VIDEO_GAP_SECONDS - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    _LAST_VIDEO_REQUEST[0] = time.monotonic()
+
+
+def _temporary(error) -> bool:
+    """A busy or rate-limited service: worth one later retry for the same video."""
+    text = str(error)
+    return "service_unavailable" in text or "read_timeout" in text or "transport" in text
+
+
+def _forget_attempt(url: str, error) -> None:
+    """After a temporary failure, let the same video be tried once more later in the run."""
+    if _temporary(error) and _FAILURES.get(url, 0) < 1:
+        _FAILURES[url] = _FAILURES.get(url, 0) + 1
+        _ATTEMPTED.discard(url)
 
 
 def scene_prompt(length: float) -> str:
@@ -231,10 +254,10 @@ def _budget_left() -> bool:
     global _VIDEO_DEADLINE
     if _VIDEO_DEADLINE is None:
         try:
-            seconds = float(os.getenv("GEMINI_VIDEO_BUDGET_SECONDS", "900"))
+            seconds = float(os.getenv("GEMINI_VIDEO_BUDGET_SECONDS", "1800"))
         except ValueError:
-            seconds = 900
-        _VIDEO_DEADLINE = time.monotonic() + max(0, min(1800, seconds if math.isfinite(seconds) else 900))
+            seconds = 1800
+        _VIDEO_DEADLINE = time.monotonic() + max(0, min(2700, seconds if math.isfinite(seconds) else 1800))
     return len(_ATTEMPTED) < MAX_VIDEOS and time.monotonic() < _VIDEO_DEADLINE
 
 
@@ -258,6 +281,7 @@ def review_candidate(url: str, length: float, title: str = "") -> dict | None:
         return None
     _ATTEMPTED.add(url)
     try:
+        _video_pause()
         response = gemini.get_client().generate_json(
             scene_prompt(length), VIDEO_SCHEMA, youtube_url=url, video_duration=length,
             max_output_tokens=4096, thinking="low")
@@ -276,6 +300,7 @@ def review_candidate(url: str, length: float, title: str = "") -> dict | None:
                             details={"suitable": review["suitable"], "problem": review["problem"], "scenes": len(usable)})
         return result
     except Exception as exc:  # A failed review never blocks a download; it is reported as not reviewed.
+        _forget_attempt(url, exc)
         gemini.record_event("source_review", "gemini", "fallback", type(exc).__name__)
         REPORT["review:" + url] = {"status": "not reviewed", "title": title[:80],
                                    "reason": f"Gemini review failed ({str(exc)[:80] or type(exc).__name__})"}
@@ -423,7 +448,9 @@ def analyse_source(source: Path) -> dict | None:
                 REPORT[str(source)] = {"status": "scene map", "scenes": len(windows), "reviewed_before_download": True}
                 return {**data, "cache": "review"}
         if url in _ATTEMPTED:
-            REPORT.setdefault(str(source), {"status": "not reviewed", "reason": "an earlier attempt for this video failed"})
+            earlier = REPORT.get("review:" + url, {}).get("reason", "")
+            REPORT.setdefault(str(source), {"status": "not reviewed",
+                                            "reason": "an earlier attempt for this video failed" + (f": {earlier}" if earlier else "")})
             return None
         if not _budget_left():
             gemini.record_event("video_analysis", "gemini", "skipped", "optional analysis budget")
@@ -433,6 +460,7 @@ def analyse_source(source: Path) -> dict | None:
         prompt = scene_prompt(actual_duration)
         client = gemini.get_client()
         route = "youtube_link"
+        _video_pause()
         try:
             response = client.generate_json(
                 prompt, VIDEO_SCHEMA, youtube_url=url, video_duration=actual_duration,
@@ -443,6 +471,7 @@ def analyse_source(source: Path) -> dict | None:
                 raise
             route = "uploaded_file"
             uploaded = client.upload_video(_proxy_copy(source), timeout=300)
+            _video_pause()
             response = client.generate_json(
                 prompt, VIDEO_SCHEMA, video_file=uploaded, video_duration=actual_duration,
                 max_output_tokens=4096, thinking="low")
@@ -459,6 +488,8 @@ def analyse_source(source: Path) -> dict | None:
                                      "timing_authority": "local_shots_and_transcript"})
         return {**data, "cache": "miss"}
     except Exception as exc:  # Optional URL access and analysis never block an edit.
+        if "url" in locals() and url:
+            _forget_attempt(url, exc)
         gemini.record_event("video_analysis", "gemini", "fallback", type(exc).__name__)
         REPORT[str(source)] = {"status": "not reviewed", "reason": f"Gemini video analysis failed ({str(exc)[:80] or type(exc).__name__})"}
         return None

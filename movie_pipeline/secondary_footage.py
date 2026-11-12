@@ -143,7 +143,7 @@ def _valid_cache(path: Path, primary_source: str, minimum_size: tuple[int,int]) 
         return False
 
 
-def _gemini_reviewed(ranked: list, film: dict, limit: int = 2) -> list:
+def _gemini_reviewed(ranked: list, film: dict, limit: int = 1) -> list:
     """Let Gemini watch the top candidates before any is downloaded.
 
     Unsuitable videos (talking heads, reactions, fan edits, slideshows) are dropped and the

@@ -303,7 +303,7 @@ def _permanent_quota(data):
     ))
 
 
-def _retry_delay(response, data, attempt):
+def _retry_delay(response, data, attempt, max_wait=30):
     delay = None
     try:
         delay = float(response.headers.get("Retry-After", ""))
@@ -319,7 +319,7 @@ def _retry_delay(response, data, attempt):
                 pass
     if delay is None or not math.isfinite(delay):
         delay = float(2 ** attempt)
-    return max(0.0, delay) if delay <= 30 else None
+    return max(0.0, delay) if delay <= max_wait else None
 
 
 class GeminiClient:
@@ -338,6 +338,11 @@ class GeminiClient:
     def _request(self, model, payload, stage, video_seconds=0.0):
         _check_model(model, FREE_MODELS)
         retries = int(_number("GEMINI_MAX_RETRIES", 1, 0, 2))
+        max_wait = 30
+        if video_seconds:
+            # Video requests are large: when Google asks us to wait for the per-minute limit to reset
+            # (often 40-60 s), wait and retry instead of giving up on the video.
+            retries, max_wait = max(retries, 3), 90
         timeout = (10, _number("GEMINI_TIMEOUT_SECONDS", 120, 10, 180))
         with _BUDGET.lock:
             if _BUDGET.blocked or model in _BUDGET.blocked_models:
@@ -346,7 +351,7 @@ class GeminiClient:
                 if _BUDGET.requests >= int(_number("GEMINI_MAX_REQUESTS", 120, 1, 1000)):
                     _BUDGET.blocked = "request_budget_exhausted"
                     raise _unavailable(_BUDGET.blocked)
-                if _BUDGET.video_seconds + video_seconds > _number("GEMINI_MAX_VIDEO_SECONDS", 3600, 1, 28800):
+                if _BUDGET.video_seconds + video_seconds > _number("GEMINI_MAX_VIDEO_SECONDS", 6000, 1, 28800):
                     raise _unavailable("video_budget_exhausted")
                 delay = max(0.0, _BUDGET.next_request - time.monotonic())
                 if delay:
@@ -416,7 +421,7 @@ class GeminiClient:
                 if any(word in error_text for word in ("consent", "voice_mismatch", "voice not found")):
                     transient = False
                 if transient and attempt < retries:
-                    delay = _retry_delay(response, data, attempt)
+                    delay = _retry_delay(response, data, attempt, max_wait)
                     if delay is not None:
                         time.sleep(delay)
                         continue
@@ -477,6 +482,9 @@ class GeminiClient:
         if thinking not in {"low", "medium", "high"}:
             raise _unavailable("invalid_thinking_level")
         config["thinkingConfig"] = {"thinkingLevel": thinking}
+        if youtube_url is not None or video_file is not None:
+            # 66 instead of 258 tokens per frame: enough to describe scenes, a quarter of the quota.
+            config["mediaResolution"] = "MEDIA_RESOLUTION_LOW"
         stage = "vision" if images or youtube_url or video_file else "text"
         payload = {"contents": [{"role": "user", "parts": parts}], "generationConfig": config}
         try:

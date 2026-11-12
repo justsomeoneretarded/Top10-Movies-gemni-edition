@@ -19,6 +19,8 @@ def isolated_optional_state(monkeypatch):
     monkeypatch.setattr(editing, "_FINGERPRINTS", {})
     monkeypatch.setattr(editing, "_VIDEO_DEADLINE", None)
     monkeypatch.setattr(editing, "_URL_REVIEWS", {})
+    monkeypatch.setattr(editing, "_FAILURES", {})
+    monkeypatch.setattr(editing, "VIDEO_GAP_SECONDS", 0.0)
     monkeypatch.setattr(editing, "REPORT", {})
     monkeypatch.setattr(scenes, "_DEADLINE", None)
     monkeypatch.setattr(scenes, "_READY", False)
@@ -542,3 +544,16 @@ def test_quota_errors_do_not_trigger_uploads(monkeypatch, tmp_path):
     source = source_file(tmp_path)
     assert editing.analyse_source(source) is None
     assert "quota_exhausted" in editing.REPORT[str(source)]["reason"]
+
+
+def test_a_temporarily_busy_service_gets_one_later_retry(monkeypatch, tmp_path):
+    client = Client(error=gemini.GeminiUnavailable("service_unavailable"))
+    use_client(monkeypatch, client)
+    monkeypatch.setattr(editing, "duration", lambda path: 45)
+    monkeypatch.setattr(editing, "_proxy_copy", lambda source: tmp_path / "proxy.mp4")
+    client.upload_video = lambda *a, **k: (_ for _ in ()).throw(gemini.GeminiUnavailable("service_unavailable"))
+    source = source_file(tmp_path)
+    assert editing.analyse_source(source) is None
+    client.error = None
+    client.response = {"windows": [scene(5, 12)], "review": {"suitable": True, "variety": .7, "problem": "none"}}
+    assert editing.analyse_source(source)["windows"]  # the second attempt later in the run succeeds
