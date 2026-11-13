@@ -286,8 +286,14 @@ def speech_video(source: Path, audio: Path, chosen: list[dict], output: Path, la
 def trailer_video(source: Path, start: float, seconds: float, output: Path, *,
                   label: Path | None = None, label_seconds: float = 3.5, muted: bool = False,
                   still: bool = False, still_motion: str | None = None, reveal: bool = False,
-                  audio: Path | None = None, reveal_style: str = "punch"):
-    """A narration-free preview, optionally carrying the animated rank introduction."""
+                  audio: Path | None = None, reveal_style: str = "punch",
+                  fade_in: float | None = None, fade_out: float | None = None) -> float:
+    """A narration-free preview, optionally carrying the animated rank introduction.
+
+    The scene's own sound gets one fixed gain (its loud and quiet moments keep their shape)
+    instead of a leveller that squashes the peaks. ``fade_in``/``fade_out`` override the default
+    edge fades when a neighbouring part carries the sound across the cut (J-cut, L-cut,
+    crossfade). Returns the gain applied in dB, so those overlaps can match the level exactly."""
     frames = max(FPS, round(seconds * FPS))
     actual = frames / FPS
     width, height = export_size()
@@ -304,15 +310,20 @@ def trailer_video(source: Path, start: float, seconds: float, output: Path, *,
         inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
         audio_index = 1
         label_index = 2
+    gain_db = clip_gain_db(source, start, actual) if has_audio and audio is None else None
+    level = (f"volume={gain_db:.2f}dB,alimiter=limit=0.79:attack=3:release=80:level=0"
+             if gain_db is not None else "loudnorm=I=-18:TP=-2:LRA=7")
+    fin = min(0.35, actual*0.15) if fade_in is None else max(0.02, min(fade_in, actual*0.3))
+    fout = min(0.6, actual*0.2) if fade_out is None else max(0.02, min(fade_out, actual*0.4))
     hold = "trim=end_frame=1,setpts=PTS-STARTPTS," if still else ""
     motion = _hold_motion(frames, 0, width, height, still_motion)+"," if still and still_motion else ""
     graph = (
         f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={width}:{height},setsar=1,{footage_grade()},setpts=PTS-STARTPTS,fps={FPS},"
         f"{hold}tpad=stop_mode=clone:stop={frames},{motion}{_reveal_filter(width, height, reveal_style) if reveal else ''}setpts=N/({FPS}*TB)[v];"
-        f"[{audio_index}:a]asetpts=PTS-STARTPTS,loudnorm=I=-18:TP=-2:LRA=7,"
-        f"afade=t=in:d={min(0.35, actual*0.15):.3f}:curve=qsin,"
-        f"afade=t=out:st={max(0, actual-min(0.6, actual*0.2)):.3f}:d={min(0.6, actual*0.2):.3f}:curve=qsin,apad[a]"
+        f"[{audio_index}:a]asetpts=PTS-STARTPTS,{level},"
+        f"afade=t=in:d={fin:.3f}:curve=qsin,"
+        f"afade=t=out:st={max(0, actual-fout):.3f}:d={fout:.3f}:curve=qsin,apad[a]"
     )
     video = "[v]"
     if label:
@@ -322,6 +333,39 @@ def trailer_video(source: Path, start: float, seconds: float, output: Path, *,
     ffmpeg(*inputs, "-filter_complex", graph, "-map", video, "-map", "[a]", "-t", actual,
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-r", FPS, "-threads", "2",
            *LOSSLESS_AUDIO, output)
+    return gain_db if gain_db is not None else 0.0
+
+
+CLIP_LOUDNESS = -18.0  # trailer scenes sit with the narrator (also -18 LUFS)
+
+
+def clip_gain_db(source: Path, start: float, seconds: float) -> float | None:
+    """One fixed gain bringing this stretch of the source to CLIP_LOUDNESS; None when unmeasurable."""
+    try:
+        result = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{max(0.0, start):.3f}", "-t", f"{seconds:.3f}",
+                                 "-i", str(source), "-map", "0:a:0", "-af", "loudnorm=I=-18:TP=-2:LRA=11:print_format=json",
+                                 "-f", "null", "-"], capture_output=True, text=True, check=False, timeout=120)
+        match = re.findall(r"\{[^{}]*\"input_i\"[^{}]*\}", result.stderr, re.S)
+        measured = float(json.loads(match[-1])["input_i"]) if match and not result.returncode else float("nan")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        return None
+    if not math.isfinite(measured) or measured < -50:
+        return None
+    return round(max(-12.0, min(12.0, CLIP_LOUDNESS - measured)), 2)
+
+
+def _level(gain_db: float | None) -> str:
+    return f"volume={gain_db:.2f}dB" if gain_db is not None else "loudnorm=I=-18:TP=-2:LRA=7"
+
+
+def fade_out_part(part: Path, seconds: float = 0.6) -> None:
+    """Fade a part's sound out at its end (used when no following part carries the sound on)."""
+    length = duration(part)
+    seconds = max(0.05, min(seconds, length * 0.4))
+    temp = part.with_name(part.stem + ".fade" + part.suffix)
+    ffmpeg("-i", part, "-filter_complex", f"[0:a]afade=t=out:st={max(0, length-seconds):.3f}:d={seconds:.3f}:curve=qsin[a]",
+           "-map", "0:v", "-map", "[a]", "-c:v", "copy", *LOSSLESS_AUDIO, temp)
+    temp.replace(part)
 
 
 REVEAL_STYLES = ("zoom_in", "zoom_out")
@@ -344,22 +388,28 @@ def _reveal_filter(width: int, height: int, style: str = "zoom_in") -> str:
     return _hold_motion(5*FPS, 0, width, height, style)+","+dip
 
 
-def l_cut(part: Path, source: Path, source_end: float, *, tail: float = 1.1, gain: float = 0.42):
-    """Let a clip's own sound carry on softly under the first ``tail`` seconds of ``part`` and fade away.
+def l_cut(part: Path, source: Path, source_end: float, *, tail: float = 1.8, gain: float = 0.4,
+          gain_db: float | None = None):
+    """Carry a scene's own sound on under the start of ``part`` and let it settle away.
 
-    Used where a scene with sound is followed by narration, so the scene's audio eases out under
-    the narrator instead of stopping dead. Video is copied; only the audio is remixed.
+    The sound continues at the scene's exact level (``gain_db``, the gain the scene itself got),
+    so there is no step at the cut; it then glides down to ``gain`` by the time the narrator is
+    talking (about half a second in) and fades out by ``tail``. Video is copied; only the audio is remixed.
     """
     streams = probe(part).get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), {})
     length = float(video.get("duration") or duration(part))
-    tail = min(tail, length * 0.4, max(0.0, duration(source) - source_end))
+    tail = min(tail, length * 0.5, max(0.0, duration(source) - source_end))
     if tail < 0.3 or not any(s.get("codec_type") == "audio" for s in probe(source).get("streams", [])):
         return False
+    settle = min(0.55, tail * 0.4)
+    # 1.0 at the cut -> gain at `settle` (smooth cosine) -> 0 at `tail` (smooth cosine).
+    envelope = (f"if(lt(t,{settle:.3f}),{gain}+(1-{gain})*(0.5+0.5*cos(PI*t/{settle:.3f})),"
+                f"{gain}*(0.5+0.5*cos(PI*min(1,(t-{settle:.3f})/{tail-settle:.3f}))))")
     temp = part.with_name(part.stem + ".lcut" + part.suffix)
     ffmpeg("-i", part, "-ss", source_end, "-t", tail, "-i", source, "-filter_complex",
-           f"[1:a]aresample=48000,aformat=channel_layouts=stereo,loudnorm=I=-18:TP=-2:LRA=7,"
-           f"afade=t=out:d={tail:.3f}:curve=qsin,volume={gain}[tail];"
+           f"[1:a]aresample=48000,aformat=channel_layouts=stereo,{_level(gain_db)},"
+           f"volume='{envelope}':eval=frame[tail];"
            f"[0:a]aresample=48000,aformat=channel_layouts=stereo[base];"
            f"[base][tail]amix=inputs=2:duration=longest:normalize=0,apad=whole_dur={length:.4f},atrim=end={length:.4f}[a]",
            "-map", "0:v", "-map", "[a]", "-c:v", "copy", *LOSSLESS_AUDIO, temp)
@@ -367,7 +417,8 @@ def l_cut(part: Path, source: Path, source_end: float, *, tail: float = 1.1, gai
     return True
 
 
-def j_cut(part: Path, source: Path, source_start: float, *, lead: float = 0.6, gain: float = 0.55):
+def j_cut(part: Path, source: Path, source_start: float, *, lead: float = 0.6, gain: float = 0.55,
+          gain_db: float | None = None):
     """Let the next trailer clip's own sound rise under the last ``lead`` seconds of ``part``.
 
     The audio is taken from just before ``source_start``, so it continues seamlessly into
@@ -384,7 +435,8 @@ def j_cut(part: Path, source: Path, source_start: float, *, lead: float = 0.6, g
     temp = part.with_name(part.stem + ".jcut" + part.suffix)
     delay = int((length - lead) * 1000)
     ffmpeg("-i", part, "-ss", source_start - lead, "-t", lead, "-i", source, "-filter_complex",
-           f"[1:a]aresample=48000,aformat=channel_layouts=stereo,afade=t=in:d={lead},volume={gain},adelay={delay}:all=1[lead];"
+           f"[1:a]aresample=48000,aformat=channel_layouts=stereo,{_level(gain_db) + ',' if gain_db is not None else ''}"
+           f"afade=t=in:d={lead:.3f}:curve=qsin,volume={gain},adelay={delay}:all=1[lead];"
            f"[0:a]aresample=48000,aformat=channel_layouts=stereo[base];"
            f"[base][lead]amix=inputs=2:duration=longest:normalize=0,apad=whole_dur={length:.4f},atrim=end={length:.4f}[a]",
            "-map", "0:v", "-map", "[a]", "-c:v", "copy", *LOSSLESS_AUDIO, temp)

@@ -31,6 +31,7 @@ MUSIC_LEVELS = {
     "narration-top": 0.95,           # number one gets a slightly bigger bed
     "trailer-audio": 0.10,           # trailer dialogue moments: the line must be heard
     "trailer-audio-separated": 0.18,  # trailer score removed: our bed carries the moment
+    "bridge": 1.5,                   # music lifts as a scene's sound settles under the narrator
     "end-screen": 3.5,
     "ending": 3.5,
 }
@@ -50,6 +51,19 @@ def segment_level(entry: dict, top_title: str | None = None) -> float:
     return MUSIC_LEVELS.get(kind, 1.0)
 
 
+BRIDGE_SECONDS = 1.6
+
+
+def _has_scene_sound(entry: dict) -> bool:
+    kind = entry.get("type")
+    if kind == "trailer-audio":
+        return True
+    if kind in ("review-preview", "cold-open"):
+        shots = entry.get("shots") or [{}]
+        return not shots[0].get("muted", True) and not shots[0].get("still")
+    return False
+
+
 def gain_curve(timeline: list[dict], speed: float, total: float, ending_start: float,
                top_title: str | None = None) -> np.ndarray:
     """Smooth gain automation at CONTROL_RATE for the final (tempo-adjusted) timeline."""
@@ -61,6 +75,14 @@ def gain_curve(timeline: list[dict], speed: float, total: float, ending_start: f
         a, b = max(0, round(start * CONTROL_RATE)), min(points, round(end * CONTROL_RATE))
         if b > a:
             target[a:b] = segment_level(entry, top_title)
+    for previous, entry in zip(timeline, timeline[1:]):
+        # Out of a scene with its own sound into narration: the music swells to carry the moment
+        # while the scene's sound settles, then glides down under the narrator - no sudden hole.
+        if entry.get("type") == "narration" and _has_scene_sound(previous):
+            start = float(entry.get("start", 0)) / speed
+            a = max(0, round(start * CONTROL_RATE))
+            b = min(points, a + round(min(BRIDGE_SECONDS, float(entry.get("duration", 0)) / speed) * CONTROL_RATE))
+            target[a:b] = np.maximum(target[a:b], MUSIC_LEVELS["bridge"])
     target[max(0, round(ending_start * CONTROL_RATE)):] = MUSIC_LEVELS["ending"]
     window = max(1, round(RAMP_SECONDS * CONTROL_RATE))
     padded = np.pad(target, (window, window), mode="edge")

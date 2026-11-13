@@ -13,6 +13,7 @@ import os
 import numpy as np
 from .core import ffmpeg, key, save_json, probe
 from . import gemini_editing
+from . import intensity as peak
 
 def _overlap(a,b):
     return a["start"] < b["start"]+b["duration"] and a["start"]+a["duration"] > b["start"]
@@ -68,6 +69,11 @@ def candidates(selector,pool,shot_lookup,film):
         energetic=_scores(selector,source,"People visibly fighting, running from danger, shooting, a vehicle crash or an explosion.",len(shots))
         quiet=_scores(selector,source,"A static quiet view, an empty room or a person standing still.",len(shots))
         relevant=_scores(selector,source,str(film.get("overview") or film["title"]),len(shots))
+        # Intensity: what the picture shows (genre-aware), how much moves, how loud and punchy it sounds.
+        intense=_scores(selector,source,peak.intensity_query(genre),len(shots))
+        picture_rank=peak.ranks(intense-.5*quiet)
+        motion_rank=peak.ranks([float(s.get("motion",0)) for s in shots])
+        sound=peak.envelope(source)
         features=getattr(selector,"features",{}).get(str(source))
         if features is not None:
             try:
@@ -110,7 +116,11 @@ def candidates(selector,pool,shot_lookup,film):
                          "cache":visual_advice["cache"],"score_adjustment":adjustment,
                          "notes":notes,
                          "scene":({k:scene[k] for k in ("id","kind","energy","sound","complete","verified","description")} if scene else None)}} if visual_advice else {})
+                hook=peak.score(float(np.mean(picture_rank[indices])),peak.loudness(sound,start,end),
+                                float(np.mean(motion_rank[indices])),
+                                scene["energy"] if scene and scene.get("verified") else None)
                 result.append({**advice,"source":str(source),"start":start,"duration":length,
+                               "intensity":hook,
                                "opening_fit":gemini_editing.opening_fit(scene,genre),
                                "scene_energy":(scene["energy"] if scene and scene.get("verified") else None),
                                "score":score+adjustment,"action_strength":strength,
@@ -169,6 +179,20 @@ def _usable(selector,clip,shot_lookup):
 def _reserve(selector,clip):
     getattr(selector,"reserve",lambda *_:None)(Path(clip["source"]),clip["start"],clip["duration"],"native-scene")
 
+HOOK_TRIES=8
+HOOK_MAX_SECONDS=12.0
+
+
+def hook_order(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(hook candidates, other scenes). The review opens on the movie's most intense moment
+    (a fight, battle, chase, scare or furious argument), short enough to hit hard; the other
+    scenes keep their usual order (meaning, relevance, Gemini's interest)."""
+    hooks=sorted((r for r in rows if r["duration"]<=HOOK_MAX_SECONDS),
+                 key=lambda c:-(c.get("intensity",.5)+.1*c["score"]+.5*c.get("opening_fit",0)))[:HOOK_TRIES]
+    rest=sorted(rows,key=lambda c:-(c["score"]+c.get("opening_fit",0)))
+    return hooks,rest
+
+
 def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recognizer,work):
     """Return opening, natural rank previews, and optional review insertions.
 
@@ -189,9 +213,12 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
     used=[]
     opening=[]
     # Extend the opening only when actual semantic action evidence exists.
+    # Each review keeps its own top hook; the cold open uses the next-best intense moments.
+    kept={i:hook_order(rows)[0][:1] for i,rows in options.items()}
     energetic=sorted([{**clip,"film_index":i} for i,rows in options.items() for clip in rows
-                      if clip["action_strength"]>.025 and clip["motion"]>4],
-                     key=lambda c:-(c["action_strength"]+c["score"]+.15*(c.get("scene_energy") or 0)))
+                      if not any(h["source"]==clip["source"] and _overlap(h,clip) for h in kept[i])
+                      and ((clip["action_strength"]>.025 and clip["motion"]>4) or clip.get("intensity",0)>=.72)],
+                     key=lambda c:-(c.get("intensity",.5)+.35*(c["action_strength"]+c["score"])))
     for candidate in energetic:
         if len(opening)>=2 or sum(c["duration"] for c in opening)>=12:
             break
@@ -224,9 +251,14 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
         examined=0
         # The first clip chosen opens the review: prefer the genre's signature moment
         # (a fight or chase for action, a complete joke for comedy) from Gemini's verified scenes.
-        for row in sorted(options.get(index,[]),key=lambda c:-(c["score"]+c.get("opening_fit",0))):
-            if len(chosen)>=wanted or examined>=max(6,wanted*2):
+        hooks,rest=hook_order(options.get(index,[]))
+        tried=set()
+        for row in hooks+rest:
+            if len(chosen)>=wanted or examined>=max(6,wanted*2)+len(hooks):
                 break
+            if id(row) in tried:  # a hook candidate already tried is not tried again
+                continue
+            tried.add(id(row))
             candidate={**row,"film_index":index}
             if getattr(selector,"visual_freshness",lambda *_:1)(Path(candidate["source"]),candidate["start"],candidate["duration"]) < .8:
                 continue

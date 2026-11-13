@@ -161,6 +161,38 @@ def refine_intro_timing(writer, title, brief, films, script, speech, speaker_fac
     return script, speech
 
 
+def smooth_joins(parts: list[Path], tails: dict[str, dict], no_tail_parts: set[str]) -> dict:
+    """Let each scene's own sound flow on into whatever part really follows it.
+
+    Into narration, an announcement or a card: an L-cut (the sound continues at the same level,
+    then settles under the narrator and fades). Into the subscribe card, another scene, or when
+    the L-cut cannot be made: a short fade at the end of the scene itself. Never a dead stop.
+    """
+    from .render import fade_out_part, l_cut
+    report = {"l_cuts": 0, "fades": 0}
+    names = [str(part) for part in parts]
+    for name, tail in tails.items():
+        if name not in names:
+            continue
+        index = names.index(name)
+        following = names[index+1] if index + 1 < len(names) else None
+        done = False
+        if following and following not in no_tail_parts and following not in tails:
+            try:
+                done = bool(l_cut(Path(following), tail["source"], tail["end"], gain_db=tail.get("gain_db")))
+            except (PipelineError, OSError, RuntimeError, ValueError):
+                done = False
+        if done:
+            report["l_cuts"] += 1
+            continue
+        try:
+            fade_out_part(Path(name), 0.6)
+            report["fades"] += 1
+        except (PipelineError, OSError, RuntimeError, ValueError):
+            pass
+    return report
+
+
 def chapter_time(seconds):
     seconds = int(seconds)
     return f"{seconds // 3600}:{seconds // 60 % 60:02}:{seconds % 60:02}" if seconds >= 3600 else f"{seconds // 60}:{seconds % 60:02}"
@@ -289,7 +321,7 @@ def setup_run(title: str, brief: str, movies: str, work: Path, output: Path, sta
     reference = voice_reference(narrator, Path(os.getenv("VOICE_DIR", "assets/voices")))
     # Include the resolver policy and writing model so stale identities/scripts are not reused.
     script_model = os.getenv("SCRIPT_MODEL", "gemma4:12b")
-    run_key = key("pipeline-v20-gemini-scene-plan", os.getenv("NARRATION_SPEED", "1.2"), title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
+    run_key = key("pipeline-v21-intense-hooks-smooth-joins", os.getenv("NARRATION_SPEED", "1.2"), title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
     work = work / run_key
     work.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
@@ -336,6 +368,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         end_screen_image,
         end_screen_video,
         finish,
+        fade_out_part,
         j_cut,
         l_cut,
         label_image,
@@ -870,22 +903,41 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     parts.append(ident_path)
     timeline.append({"start": 0.0, "duration": ident_seconds, "type": "brand-ident", "narration": False})
     offset += ident_seconds
-    for shot in opening:
+    smooth = os.getenv("SMOOTH_AUDIO", "true").strip().lower() != "false"
+    no_tail_parts: set[str] = set()  # parts a scene's sound must not run into (the subscribe card)
+    # Scenes whose own sound should flow on into the next part (settled once every part exists).
+    tails: dict[str, dict] = {}
+    previous_sound = None  # the opening clip just rendered, when it has sound
+    for number, shot in enumerate(opening):
         film_index = shot["film_index"]
         source = Path(shot["source"])
         path = work / f"part-{len(parts):03}.mp4"
+        sounding = smooth and not shot["muted"] and not shot.get("still")
+        follows = number + 1 < len(opening) and not opening[number+1]["muted"] and not opening[number+1].get("still")
+        edges = ({"fade_in": 0.04 if previous_sound else None, "fade_out": 0.45 if follows else 0.06}
+                 if sounding else {})
         try:
-            trailer_video(source, shot["start"], shot["duration"], path, muted=shot["muted"],
-                          still=bool(shot.get("still", False)), still_motion="zoom_in" if shot.get("still") else None)
+            gain_db = trailer_video(source, shot["start"], shot["duration"], path, muted=shot["muted"],
+                          still=bool(shot.get("still", False)), still_motion="zoom_in" if shot.get("still") else None, **edges)
         except (PipelineError, OSError, RuntimeError, ValueError):
             if source == trailers[film_index]:
                 raise
             shot = {**choose_preview(selector, [trailers[film_index]], shot_lookup,
                     title+". "+brief, shot["duration"], action, dialogue=dialogue), "film_index": film_index}
             source = Path(shot["source"])
-            trailer_video(source, shot["start"], shot["duration"], path, muted=shot["muted"],
+            sounding = False
+            gain_db = trailer_video(source, shot["start"], shot["duration"], path, muted=shot["muted"],
                           still=bool(shot.get("still", False)), still_motion="zoom_in" if shot.get("still") else None)
+        if sounding and previous_sound:
+            # Crossfade: this scene's sound rises under the end of the previous one as that fades.
+            try:
+                j_cut(previous_sound, source, shot["start"], lead=0.45, gain=1.0, gain_db=gain_db)
+            except (PipelineError, OSError, RuntimeError, ValueError):
+                pass
         seconds = duration(path)
+        previous_sound = path if sounding and follows else None
+        if sounding and not follows:
+            tails[str(path)] = {"source": source, "end": shot["start"] + seconds, "gain_db": gain_db}
         timeline.append({"start": offset, "duration": seconds, "type": "cold-open", "film": films[film_index]["title"],
                          "source_start": shot["start"], "shots": [shot], "narration": False})
         for cue in shot.get("cues", []):
@@ -895,7 +947,6 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         used_video_sources.add(str(source))
         offset += seconds
         note_visual_beat(selector, seconds, still=bool(shot.get("still")))
-    pending_tail = None  # (source, time) of the last scene with sound, for an L-cut into narration
     for section_index, section in enumerate(script["sections"]):
         film_index = section["film"]
         film = films[film_index]
@@ -917,19 +968,23 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             # Render the full native scene first so an optional-source fallback is
             # settled before choosing the announcement's matching trailer still.
             preview_path = work / f"review-preview-{section_index}.mp4"
+            preview_sound = smooth and not preview["muted"] and not preview.get("still")
+            edges = {"fade_in": 0.04, "fade_out": 0.06} if preview_sound else {}
             try:
-                trailer_video(source, preview["start"], preview["duration"], preview_path,
+                preview_gain = trailer_video(source, preview["start"], preview["duration"], preview_path,
                               muted=preview["muted"], still=bool(preview.get("still", False)),
-                              still_motion="zoom_in" if preview.get("still") else None)
+                              still_motion="zoom_in" if preview.get("still") else None, **edges)
             except (PipelineError, OSError, RuntimeError, ValueError):
                 if source == trailer:
                     raise
                 preview = choose_preview(selector, [trailer], shot_lookup, title+". "+brief,
                                          REVIEW_PREVIEW_SECONDS, section_action, dialogue=dialogue)
                 source = Path(preview["source"])
-                trailer_video(source, preview["start"], preview["duration"], preview_path,
+                preview_sound = smooth and not preview["muted"] and not preview.get("still")
+                edges = {"fade_in": 0.04, "fade_out": 0.06} if preview_sound else {}
+                preview_gain = trailer_video(source, preview["start"], preview["duration"], preview_path,
                               muted=preview["muted"], still=bool(preview.get("still", False)),
-                              still_motion="zoom_in" if preview.get("still") else None)
+                              still_motion="zoom_in" if preview.get("still") else None, **edges)
 
             # A complete, separately verified utterance: no waveform is sliced
             # to insert the preview, and the title is not repeated in the body.
@@ -952,6 +1007,13 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                 speech_video(trailer, audio, [reveal_shot], path, label,
                              work / f"render-{len(parts):03}", label_seconds=duration(audio))
             announcement_seconds = duration(path)
+            if preview_sound:
+                # The hook's sound rises under the last words of the announcement, so the scene
+                # arrives already in motion instead of starting from silence.
+                try:
+                    j_cut(path, source, preview["start"], lead=0.45, gain=0.85, gain_db=preview_gain)
+                except (PipelineError, OSError, RuntimeError, ValueError):
+                    pass
             for cue in script_cues(announcement, aligned[(section_index, 0)]):
                 all_cues.append({"start": offset+cue["start"],
                                  "end": offset+min(cue["end"], announcement_seconds), "text": cue["text"]})
@@ -971,8 +1033,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             timeline.append({"start": offset, "duration": seconds, "type": "review-preview", "film": film["title"],
                              "source_start": preview["start"], "shots": [preview], "narration": False})
             parts.append(preview_path)
-            if not preview.get("muted", True) and not preview.get("still"):
-                pending_tail = (source, preview["start"] + seconds)
+            if preview_sound:
+                tails[str(preview_path)] = {"source": source, "end": preview["start"] + seconds, "gain_db": preview_gain}
             used_video_sources.add(str(source))
             offset += seconds
             note_visual_beat(selector, seconds, still=bool(preview.get("still")))
@@ -1030,13 +1092,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                     for pool in pools:
                         pool[:] = [source for source in pool if str(source) not in failed]
                     speech_video(trailer, audio, chosen, path, None, work / f"render-{len(parts):03}")
-            if pending_tail and section["kind"] != "subscribe" and os.getenv("SMOOTH_AUDIO", "true") != "false":
-                # The scene just shown keeps sounding softly under the narrator's first second, then fades.
-                try:
-                    l_cut(path, *pending_tail)
-                except (PipelineError, OSError, RuntimeError, ValueError):
-                    pass
-            pending_tail = None
+            if section["kind"] == "subscribe":
+                no_tail_parts.add(str(path))
             if section["kind"] in {"subscribe", "outro"} and re.search(r"\bsubscribe\b", text, re.IGNORECASE):
                 add_cta_animation(path, text, aligned[(section_index, paragraph_index)], work / f"cta-animation-{len(parts):03}")
             used_video_sources.update(str(cut.get("source", trailer)) for cut in chosen if not cut.get("image"))
@@ -1052,9 +1109,11 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             native_clip = native_insertions.get(section_index, {}).get(paragraph_index)
             if native_clip:
                 native_path = work / f"part-{len(parts):03}.mp4"
+                native_sound = smooth and not native_clip.get("muted", False)
                 try:
-                    trailer_video(Path(native_clip["source"]), native_clip["start"], native_clip["duration"],
-                                  native_path, muted=native_clip.get("muted", False))
+                    native_gain = trailer_video(Path(native_clip["source"]), native_clip["start"], native_clip["duration"],
+                                  native_path, muted=native_clip.get("muted", False),
+                                  **({"fade_in": 0.04, "fade_out": 0.06} if native_sound else {}))
                 except (PipelineError, OSError, RuntimeError, ValueError) as exc:
                     print(f"Optional scene skipped ({type(exc).__name__}); preserving the review.", flush=True)
                 else:
@@ -1066,9 +1125,17 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                     timeline.append({"start": offset, "duration": seconds, "type": "trailer-audio",
                                      "film": film["title"], "source_start": native_clip["start"],
                                      "source": native_clip["source"], "native_verified": True, "separated": False})
+                    if native_sound:
+                        # The scene's sound rises under the narrator's last words (J-cut) ...
+                        try:
+                            j_cut(parts[-1], Path(native_clip["source"]), native_clip["start"],
+                                  lead=0.5, gain=0.85, gain_db=native_gain)
+                        except (PipelineError, OSError, RuntimeError, ValueError):
+                            pass
+                        # ... and flows on under whatever comes next (L-cut), settled below.
+                        tails[str(native_path)] = {"source": Path(native_clip["source"]),
+                                                   "end": native_clip["start"] + seconds, "gain_db": native_gain}
                     parts.append(native_path)
-                    if not native_clip.get("muted", False):
-                        pending_tail = (Path(native_clip["source"]), native_clip["start"] + seconds)
                     used_video_sources.add(native_clip["source"])
                     offset += seconds
             elif not native_plan:
@@ -1184,6 +1251,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     del selector
     gc.collect()
     print("Mixing and exporting final video", flush=True)
+    smooth_joins(parts, tails, no_tail_parts)
     final_duration, speed = finish(parts, output / "final-video.mp4", work, action, spec=spec, music_theme=music_theme,
                                    timeline=timeline, top_title=films[0]["title"], overlays=overlays)
     export_recovery = SpeechRecovery(None, lambda: episode_narrator(reference, work / "speech"),
