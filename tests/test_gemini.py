@@ -383,7 +383,7 @@ def test_slow_primary_model_falls_back_without_disabling_grounded_research(tmp_p
         Response(answer()), Response(answer("A pilot returns.")))
     configured_identity = gemini.identity()
     assert provider.generate_json("Write from verified facts", SCHEMA) == {"answer": "ok"}
-    assert provider.text_model == provider.vision_model == "gemini-3.5-flash-lite"
+    assert provider.text_model == provider.vision_model == "gemini-3.8-flash"  # tried again after a pause
     assert gemini.identity() == configured_identity
     assert provider.grounded_text("Research the next film")["text"] == "A pilot returns."
     assert [url.split("/")[-1] for url, _ in session.calls] == [
@@ -457,7 +457,7 @@ def test_exhausted_primary_service_failure_uses_modern_free_fallback(monkeypatch
     assert [url.split("/")[-1] for url, _ in session.calls] == (
         ["gemini-3.8-flash:generateContent"] * (retries + 1)
         + ["gemini-3.5-flash-lite:generateContent"])
-    assert provider.text_model == provider.vision_model == "gemini-3.5-flash-lite"
+    assert provider.text_model == provider.vision_model == "gemini-3.8-flash"  # tried again after a pause
     assert gemini.identity() == configured_identity
     assert gemini._BUDGET.blocked == ""
     assert gemini._BUDGET.blocked_models["gemini-3.8-flash"] == "service_unavailable"
@@ -497,3 +497,46 @@ def test_without_a_spare_key_the_quota_error_is_raised(monkeypatch):
     provider._fixed_key = ""
     with pytest.raises(gemini.GeminiUnavailable, match="quota"):
         provider.generate_json("Example", SCHEMA)
+
+
+def test_a_busy_model_is_tried_again_after_a_short_pause(monkeypatch):
+    monkeypatch.setattr(gemini.time, "sleep", lambda seconds: None)
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "0")
+    busy = Response({"error": {"status": "UNAVAILABLE", "message": "x"}}, 503)
+    provider, session = client(busy, Response(answer()))
+    with pytest.raises(gemini.GeminiUnavailable):
+        provider.generate_json("Example", SCHEMA, model="gemini-3.5-flash-lite")
+    with pytest.raises(gemini.GeminiUnavailable):  # still pausing: no request is spent
+        provider.generate_json("Example", SCHEMA, model="gemini-3.5-flash-lite")
+    assert len(session.calls) == 1
+    gemini._BUDGET.cooldown["gemini-3.5-flash-lite"] = 0  # the pause is over
+    assert provider.generate_json("Example", SCHEMA, model="gemini-3.5-flash-lite")["answer"] == "ok"
+
+
+def test_busy_video_analysis_never_blocks_writing(monkeypatch):
+    monkeypatch.setattr(gemini.time, "sleep", lambda seconds: None)
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "0")
+    busy = Response({"error": {"status": "UNAVAILABLE", "message": "x"}}, 503)
+    provider, session = client(*[busy] * 4, Response(answer()))
+    with pytest.raises(gemini.GeminiUnavailable):
+        provider.generate_json("Map scenes", SCHEMA, model="gemini-3.5-flash-lite",
+                               youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", video_duration=60)
+    assert gemini._BUDGET.blocked_models == {"gemini-3.5-flash-lite#video": "service_unavailable"}
+    assert provider.generate_json("Write the review", SCHEMA, model="gemini-3.5-flash-lite") == {"answer": "ok"}
+
+
+def test_writing_waits_out_a_busy_server(monkeypatch):
+    monkeypatch.setattr(gemini.time, "sleep", lambda seconds: None)
+    monkeypatch.setenv("GEMINI_TEXT_RETRIES", "3")
+    busy = Response({"error": {"status": "UNAVAILABLE", "message": "x"}}, 503)
+    provider, session = client(busy, busy, busy, Response(answer()))
+    assert provider.generate_json("Write the review", SCHEMA) == {"answer": "ok"}
+    assert {url.split("/")[-1] for url, _ in session.calls} == {"gemini-3.8-flash:generateContent"}
+
+
+def test_the_local_writer_never_sees_footage_scene_labels():
+    import json as _json
+    from movie_pipeline.script import without_scene_labels
+    facts = {"title": "Dredd", "available_scenes": ['fight: two men [brawl] in a "hallway"'], "overview": "A judge..."}
+    cleaned = without_scene_labels("Facts: " + _json.dumps(facts))
+    assert "hallway" not in cleaned and _json.loads(cleaned[7:]) == {"title": "Dredd", "overview": "A judge..."}

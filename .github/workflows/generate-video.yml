@@ -178,7 +178,7 @@ jobs:
       GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
-      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '200' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
       GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
@@ -270,7 +270,7 @@ jobs:
       GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
-      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '200' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
       GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
@@ -431,7 +431,7 @@ jobs:
       GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
-      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '200' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
       GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
@@ -557,7 +557,7 @@ jobs:
       GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
-      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '200' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
       GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}
@@ -682,7 +682,7 @@ jobs:
       GEMINI_VOICE_FEMALE: ${{ secrets.GEMINI_VOICE_FEMALE || vars.GEMINI_VOICE_FEMALE }}
       # Provider enforces its free-only allowlist even if a variable is changed.
       GEMINI_FREE_ONLY: 'true'
-      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '120' }}
+      GEMINI_MAX_REQUESTS: ${{ vars.GEMINI_MAX_REQUESTS || '200' }}
       GEMINI_MAX_VIDEO_SECONDS: ${{ vars.GEMINI_MAX_VIDEO_SECONDS || '3600' }}
       GEMINI_MIN_INTERVAL_SECONDS: ${{ vars.GEMINI_MIN_INTERVAL_SECONDS || '12' }}
       GEMINI_MAX_RETRIES: ${{ vars.GEMINI_MAX_RETRIES || '1' }}

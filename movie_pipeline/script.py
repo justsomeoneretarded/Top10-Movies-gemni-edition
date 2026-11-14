@@ -38,6 +38,14 @@ FACT_FIELDS = ("title", "year", "kind", "status", "release_date", "genres", "dir
                "wiki_summary", "wiki_production", "wiki_reception", "research_notes", "grounded_notes")
 
 
+_SCENES = re.compile(r'(,\s*)?"available_scenes":\s*\[(?:"(?:[^"\\]|\\.)*"|[\s,])*\](\s*,)?')
+
+
+def without_scene_labels(prompt: str) -> str:
+    """Remove the footage scene list from a prompt (the JSON around it stays valid)."""
+    return _SCENES.sub(lambda m: "," if m.group(1) and m.group(2) else "", prompt)
+
+
 def film_facts(film: dict) -> dict:
     """The verified material a writer may use for one title: TMDB plus optional Wikipedia notes."""
     facts = {name: film[name] for name in FACT_FIELDS if film.get(name) not in (None, "", [])}
@@ -463,6 +471,9 @@ class Writer:
                 print("Gemini writing unavailable for this request; using the existing local writer.", flush=True)
                 self._prepare_local_model()
                 self._using_local = True
+                # The small local model reads scene labels ("hand-to-hand combat") aloud instead of
+                # telling the story: it gets the verified plot facts only.
+                prompt = without_scene_labels(prompt)
         response = requests.post(self.url + "/api/chat", json={
             "model": self.local_model, "stream": False, "think": False, "format": schema,
             "messages": [

@@ -33,6 +33,7 @@ FREE_TTS_MODELS = frozenset({
 # These Search models are available only to grandfathered prior users.
 GROUNDING_MODELS = frozenset({"gemini-2.5-flash", "gemini-2.5-flash-lite"})
 FREE_MODELS = FREE_TEXT_MODELS | FREE_TTS_MODELS | GROUNDING_MODELS
+TEMPORARY_BLOCK_SECONDS = 90.0  # a busy, slow or rate-limited model is retried after this pause
 _ACTUAL_MODELS = {}
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 _LOG_LOCK = threading.Lock()
@@ -53,6 +54,7 @@ class _Budget:
     next_request: float = 0.0
     blocked: str = ""
     blocked_models: dict = field(default_factory=dict)
+    cooldown: dict = field(default_factory=dict)  # block key -> time a temporary block ends
 
 
 _BUDGET = _Budget()
@@ -81,6 +83,7 @@ def _switch_key(reason: str) -> bool:
     _KEY_INDEX[0] += 1
     _BUDGET.blocked = ""
     _BUDGET.blocked_models.clear()
+    _BUDGET.cooldown.clear()
     record_event("provider", "gemini", "key_switch", reason[:40], details={"key_number": _KEY_INDEX[0] + 1})
     print(f"Gemini key {_KEY_INDEX[0]} {reason.split(' ')[0]}; switching to key {_KEY_INDEX[0] + 1}.", flush=True)
     return True
@@ -382,14 +385,27 @@ class GeminiClient:
             # Video requests are large: when Google asks us to wait for the per-minute limit to reset
             # (often 40-60 s), wait and retry instead of giving up on the video.
             retries, max_wait = max(retries, 3), 90
+        else:
+            # Writing is the most valuable request of a run: a busy server gets several patient retries.
+            retries, max_wait = max(retries, int(_number("GEMINI_TEXT_RETRIES", 3, 0, 5))), 60
         timeout = (10, _number("GEMINI_TIMEOUT_SECONDS", 120, 10, 180))
+        # Video and writing are blocked separately: a model that is too busy to watch trailers
+        # must never take the script down with it.
+        block = model + ("#video" if video_seconds else "")
         with _BUDGET.lock:
-            if _BUDGET.blocked or model in _BUDGET.blocked_models:
-                raise _unavailable(_BUDGET.blocked or _BUDGET.blocked_models[model])
+            if block in _BUDGET.cooldown and time.monotonic() >= _BUDGET.cooldown[block]:
+                # A busy or slow server is temporary: try the model again after a short pause.
+                _BUDGET.cooldown.pop(block, None)
+                _BUDGET.blocked_models.pop(block, None)
+            if _BUDGET.blocked or block in _BUDGET.blocked_models:
+                raise _unavailable(_BUDGET.blocked or _BUDGET.blocked_models[block])
             for attempt in range(retries + 1):
                 if _BUDGET.requests >= int(_number("GEMINI_MAX_REQUESTS", 120, 1, 1000)):
                     _BUDGET.blocked = "request_budget_exhausted"
                     raise _unavailable(_BUDGET.blocked)
+                if video_seconds and _BUDGET.requests >= 0.6 * int(_number("GEMINI_MAX_REQUESTS", 120, 1, 1000)):
+                    # The rest of the run's requests are kept for writing the script.
+                    raise _unavailable("video_budget_exhausted")
                 if _BUDGET.video_seconds + video_seconds > _number("GEMINI_MAX_VIDEO_SECONDS", 6000, 1, 28800):
                     raise _unavailable("video_budget_exhausted")
                 delay = max(0.0, _BUDGET.next_request - time.monotonic())
@@ -418,10 +434,12 @@ class GeminiClient:
                         continue
                     if isinstance(error, requests.ReadTimeout):
                         # A slow model is not evidence that other models are offline.
-                        _BUDGET.blocked_models[model] = "model_read_timeout"
+                        _BUDGET.blocked_models[block] = "model_read_timeout"
+                        _BUDGET.cooldown[block] = time.monotonic() + TEMPORARY_BLOCK_SECONDS
                         raise _unavailable("model_read_timeout") from None
-                    _BUDGET.blocked = "transport_unavailable"
-                    raise _unavailable(_BUDGET.blocked) from None
+                    _BUDGET.blocked_models[block] = "transport_unavailable"
+                    _BUDGET.cooldown[block] = time.monotonic() + TEMPORARY_BLOCK_SECONDS
+                    raise _unavailable("transport_unavailable") from None
                 try:
                     data = response.json()
                 except (TypeError, ValueError):
@@ -450,10 +468,10 @@ class GeminiClient:
                     _BUDGET.blocked = "authentication_or_access_unavailable"
                     raise _unavailable(_BUDGET.blocked)
                 if status == 404:
-                    _BUDGET.blocked_models[model] = "model_unavailable"
+                    _BUDGET.blocked_models[block] = "model_unavailable"
                     raise _unavailable("model_unavailable")
                 if status == 429 and _permanent_quota(data):
-                    _BUDGET.blocked_models[model] = "quota_exhausted"
+                    _BUDGET.blocked_models[block] = "quota_exhausted"
                     raise _unavailable("quota_exhausted")
                 transient = status in (429, 500, 502, 503, 504)
                 error_text = json.dumps(data).lower()[:60000]
@@ -466,7 +484,8 @@ class GeminiClient:
                         continue
                 if transient:
                     reason = "quota_exhausted" if status == 429 else "service_unavailable"
-                    _BUDGET.blocked_models[model] = reason
+                    _BUDGET.blocked_models[block] = reason
+                    _BUDGET.cooldown[block] = time.monotonic() + TEMPORARY_BLOCK_SECONDS
                     raise _unavailable(reason)
                 # Google's text is never stored; only its error code and which known problem words it mentions.
                 error = data.get("error") if isinstance(data.get("error"), dict) else {}
@@ -538,11 +557,15 @@ class GeminiClient:
             config["thinkingConfig"] = {"thinkingLevel": "low"}
             model = "gemini-3.5-flash-lite"
             data = self._request(model, payload, stage, video_seconds)
-            _ACTUAL_MODELS["gemini-3.8-flash"] = model
-            if self.text_model == "gemini-3.8-flash":
-                self.text_model = self.model = model
-            if self.vision_model == "gemini-3.8-flash":
-                self.vision_model = model
+            if fallback_reason == "model_unavailable":
+                # The model does not exist for this key: use the free alternative for the rest of the run.
+                _ACTUAL_MODELS["gemini-3.8-flash"] = model
+                if self.text_model == "gemini-3.8-flash":
+                    self.text_model = self.model = model
+                if self.vision_model == "gemini-3.8-flash":
+                    self.vision_model = model
+            # A busy or slow model is only skipped for this request: it is tried again after its
+            # short pause, so one busy moment does not leave the whole script to the lighter model.
             fallback_reasons = {
                 "model_unavailable": "preferred_model_unavailable",
                 "model_read_timeout": "preferred_model_read_timeout",
