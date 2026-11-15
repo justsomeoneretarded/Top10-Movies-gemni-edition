@@ -112,3 +112,10 @@ def test_scene_sound_carries_across_the_cut_without_a_drop(tmp_path, monkeypatch
     assert abs(before - after) < 3.5          # no step at the cut
     assert _rms(talk, 0.9, 0.2) < after - 6   # then it settles under the narrator
     assert _rms(talk, 2.5, 0.5) < -60         # and is gone
+
+
+def test_romance_hook_is_the_steamy_moment_not_the_loudest():
+    assert "kiss" in intensity.intensity_query("romance") and "gunfire" not in intensity.intensity_query("romance")
+    kiss = intensity.score(picture=0.95, sound=0.1, motion=0.1, genre="romance")
+    shouting = intensity.score(picture=0.3, sound=1.0, motion=0.9, genre="romance")
+    assert kiss > shouting

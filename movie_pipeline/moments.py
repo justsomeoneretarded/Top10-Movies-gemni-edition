@@ -118,7 +118,7 @@ def candidates(selector,pool,shot_lookup,film):
                          "scene":({k:scene[k] for k in ("id","kind","energy","sound","complete","verified","description")} if scene else None)}} if visual_advice else {})
                 hook=peak.score(float(np.mean(picture_rank[indices])),peak.loudness(sound,start,end),
                                 float(np.mean(motion_rank[indices])),
-                                scene["energy"] if scene and scene.get("verified") else None)
+                                scene["energy"] if scene and scene.get("verified") else None,genre)
                 result.append({**advice,"source":str(source),"start":start,"duration":length,
                                "intensity":hook,
                                "opening_fit":gemini_editing.opening_fit(scene,genre),

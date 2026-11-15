@@ -23,7 +23,8 @@ GENRE_PEAKS = {
     "thriller": "A violent struggle, a gun pointed at someone, a tense chase or a shocking attack.",
     "crime": "A violent confrontation, a shootout, a gun to someone's head or a furious interrogation.",
     "drama": "A furious shouting argument, someone crying in anger, a slap or a violent outburst.",
-    "romance": "A passionate, emotional confrontation between two people, tears and shouting.",
+    "romance": ("A passionate kiss, two lovers pulling each other close, an intimate moment in bed or "
+                "against a wall, a heated look between a couple about to kiss."),
     "comedy": "A big chaotic physical comedy moment: people falling, crashing or panicking.",
     "science fiction": "A huge space battle, alien attack, laser fire or explosion.",
     "fantasy": "A massive battle with creatures, magic blasts or a dragon attacking.",
@@ -32,9 +33,14 @@ GENRE_PEAKS = {
 }
 
 
+# Genres whose peak is quiet (a kiss, not a gunfight): the picture decides, not the volume.
+QUIET_PEAKS = {"romance"}
+
+
 def intensity_query(genre: str = "") -> str:
-    peak = GENRE_PEAKS.get((genre or "").strip().lower(), "")
-    return (GENERIC + " " + peak).strip()
+    genre = (genre or "").strip().lower()
+    peak = GENRE_PEAKS.get(genre, "")
+    return peak if genre in QUIET_PEAKS else (GENERIC + " " + peak).strip()
 
 
 def envelope(source: Path | str) -> np.ndarray | None:
@@ -88,9 +94,14 @@ def ranks(values) -> np.ndarray:
     return average[inverse] / (len(values) - 1)
 
 
-def score(picture: float, sound: float, motion: float, gemini_energy: float | None = None) -> float:
+def score(picture: float, sound: float, motion: float, gemini_energy: float | None = None,
+          genre: str = "") -> float:
     """Combined 0..1 intensity. Gemini's watched energy, when verified, counts most."""
-    local = 0.42 * picture + 0.36 * sound + 0.22 * motion
+    if (genre or "").strip().lower() in QUIET_PEAKS:
+        local = 0.8 * picture + 0.1 * sound + 0.1 * motion
+        gemini_energy = None  # Gemini's energy rates action; a kiss scores low on it
+    else:
+        local = 0.42 * picture + 0.36 * sound + 0.22 * motion
     if gemini_energy is None:
         return round(local, 4)
     return round(0.55 * float(gemini_energy) + 0.45 * local, 4)
