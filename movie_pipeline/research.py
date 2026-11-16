@@ -43,6 +43,25 @@ class Research:
                  found.get("original_title" if kind == "movie" else "original_name", ""))
         return max(SequenceMatcher(None, normalized(item.title), normalized(name or "")).ratio() for name in names)
 
+    def title_alias_matches(self, item: FilmInput, found: dict, kind: str) -> bool:
+        """Verify an exact alternative title on this search result's own TMDB ID."""
+        identifier = found.get("id")
+        if type(identifier) is not int or identifier <= 0:
+            return False
+        try:
+            data = self.get(f"{kind}/{identifier}/alternative_titles")
+        except (PipelineError, requests.RequestException, ValueError, TypeError):
+            # Optional corroboration may fail; never turn a prefix into an identity.
+            print("TMDB alternative-title lookup unavailable; no unverified alias accepted.", flush=True)
+            return False
+        if not isinstance(data, dict) or type(data.get("id")) is not int or data["id"] != identifier:
+            return False
+        aliases = data.get("titles" if kind == "movie" else "results", [])
+        if not isinstance(aliases, list):
+            return False
+        return any(isinstance(alias, dict) and isinstance(alias.get("title"), str)
+                   and normalized(alias["title"]) == normalized(item.title) for alias in aliases)
+
     def wikidata_candidates(self, item: FilmInput) -> list:
         """Independent identity fallback; never send the TMDB bearer token to Wikimedia."""
         endpoint = "https://www.wikidata.org/w/api.php"
@@ -59,7 +78,8 @@ class Research:
             for entity in response.json().get("entities", {}).values():
                 names = [entity.get("labels", {}).get("en", {}).get("value", "")]
                 names += [a.get("value", "") for a in entity.get("aliases", {}).get("en", [])]
-                if normalized(item.title) not in {normalized(name) for name in names}:
+                verified_names = {normalized(name) for name in names if isinstance(name, str) and normalized(name)}
+                if normalized(item.title) not in verified_names:
                     continue
                 claims = entity.get("claims", {})
                 dates = [c.get("mainsnak", {}).get("datavalue", {}).get("value", {}) for c in claims.get("P577", []) if c.get("rank") != "deprecated"]
@@ -73,6 +93,12 @@ class Research:
                     for kind, group in (("movie", "movie_results"), ("tv", "tv_results")):
                         for row in found.get(group, []):
                             score = self.title_score(item, row, kind)
+                            # Both names must occur on the same dated, IMDb-linked entity.
+                            # A shared prefix alone never establishes an alias.
+                            canonical = (row.get("title" if kind == "movie" else "name", ""),
+                                         row.get("original_title" if kind == "movie" else "original_name", ""))
+                            if any(isinstance(name, str) and normalized(name) in verified_names for name in canonical):
+                                score = 1.0
                             date = row.get("release_date" if kind == "movie" else "first_air_date", "")
                             if score >= 0.88 and date[:4].isdigit() and abs(int(date[:4]) - item.year) <= 2:
                                 row = {**row, "_year_evidence": f"Wikidata {entity['id']} publication date", "_imdb_id": imdb, "_identity_source": f"https://www.wikidata.org/wiki/{entity['id']}"}
@@ -89,6 +115,7 @@ class Research:
         kinds = ((selected_kind,) if selected_kind in ("movie", "tv") else
                  ("tv", "movie") if getattr(self, "preferred_kind", "movie") == "tv" else ("movie", "tv"))
         for kind in kinds:
+            alias_checks = 0
             data = self.get(f"search/{kind}", query=item.title, language="en-US", include_adult="false")
             results = list(data.get("results", []))
             if fold_accents(item.title) != item.title:  # 'Shōgun' typed with a macron: also search 'Shogun'
@@ -98,6 +125,18 @@ class Research:
             for found in results:
                 date = found.get("release_date" if kind == "movie" else "first_air_date", "")
                 similarity = self.title_score(item, found, kind)
+                if date[:4] == str(item.year) and similarity < 0.88 and alias_checks < 5:
+                    names = (found.get("title" if kind == "movie" else "name", ""),
+                             found.get("original_title" if kind == "movie" else "original_name", ""))
+                    # A delimited subtitle only narrows the bounded lookup; it is not proof.
+                    prefixes = [re.split(r"\s+[-–—]\s+|:\s*", name, maxsplit=1)
+                                for name in names if isinstance(name, str)]
+                    if any(len(parts) == 2 and normalized(parts[0]) == normalized(item.title)
+                           and normalized(parts[1]) for parts in prefixes):
+                        alias_checks += 1
+                        if self.title_alias_matches(item, found, kind):
+                            similarity = 1.0
+                            print(f"Verified exact TMDB alternative title for {item.title} ({item.year}) on {kind}/{found['id']}.", flush=True)
                 if date[:4] == str(item.year) and similarity >= 0.88:
                     candidates.append((similarity, kind, found))
                     break

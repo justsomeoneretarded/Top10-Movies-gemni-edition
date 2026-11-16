@@ -799,8 +799,6 @@ jobs:
           python -m pip install torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install --no-deps open_clip_torch==2.32.0 timm==1.0.15
           python -m pip install ftfy regex
-      - name: Prepare local script model
-        run: bash scripts/bootstrap_ollama.sh
       - name: Collect warm-up results
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -815,8 +813,15 @@ jobs:
           for archive in warm-results/*.tgz; do tar -xzf "$archive"; done
           rm -rf warm-results
           echo "Warm-up archives unpacked: $(ls work/footage 2>/dev/null | grep -c '\.mp4$' || true) trailers ready."
+      - name: Install durable checkpoint helper
+        run: npm install --prefix .github/actions/resilient-production --omit=dev --ignore-scripts --no-audit --no-fund --no-package-lock
+      - name: Restore the latest checkpoint from this run
+        continue-on-error: true
+        uses: ./.github/actions/resilient-production
+        with:
+          mode: restore
       - name: Produce the complete package
-        run: bash scripts/run_logged.sh "Production" python -m movie_pipeline.cli
+        uses: ./.github/actions/resilient-production
       - name: Render review frames from the finished video
         continue-on-error: true
         run: python -m scripts.review_package
@@ -835,6 +840,14 @@ jobs:
           path: |
             work/gemini-usage-*.jsonl
             work/gemini-preflight-*.json
+          if-no-files-found: ignore
+          retention-days: 2
+      - name: Runner resource diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-diagnostics-${{ github.run_number }}-${{ github.run_attempt }}
+          path: work/runner-diagnostics/
           if-no-files-found: ignore
           retention-days: 2
       - name: Bounded audio inspection samples

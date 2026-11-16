@@ -38,8 +38,11 @@ server_ready() {
 
 # Reusing a healthy server avoids a second process fighting for the same port.
 if ! server_ready; then
-  ollama serve > "$runner_temp/ollama.log" 2>&1 < /dev/null &
+  ollama serve > "${OLLAMA_LOG_FILE:-$runner_temp/ollama.log}" 2>&1 < /dev/null &
   server_pid=$!
+  if [ -n "${OLLAMA_PID_FILE:-}" ]; then
+    printf '%s\n' "$server_pid" > "$OLLAMA_PID_FILE"
+  fi
   for attempt in $(seq 1 60); do
     if server_ready; then break; fi
     if ! kill -0 "$server_pid" 2>/dev/null; then break; fi

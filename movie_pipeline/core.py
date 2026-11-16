@@ -33,7 +33,8 @@ def notice(title: str, message: str, level: str = "notice"):
 
 
 def ffmpeg(*args):
-    return run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args])
+    return run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-filter_threads", "2", "-filter_complex_threads", "2", *args])
 
 
 def probe(path: Path) -> dict:
