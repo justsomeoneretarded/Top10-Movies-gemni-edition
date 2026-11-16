@@ -98,7 +98,7 @@ def test_scope_restores_invoking_identity_and_path(monkeypatch, tmp_path):
     limits = guard.calculate_limits(16 * guard.GIB, 0, 4)
     command = guard.scope_command(["python", "-m", "movie_pipeline.cli"], "test.scope", limits)
     assert command[:5] == ["/usr/bin/sudo", "-n", "-E", "/usr/bin/systemd-run", "--scope"]
-    assert "--property=MemoryOOMGroup=yes" in command
+    assert "--property=OOMPolicy=kill" in command
     assert "--property=MemoryMax=" + str(limits.memory_max) in command
     assert "--property=MemorySwapMax=0" in command
     assert "--property=CPUQuota=300%" in command

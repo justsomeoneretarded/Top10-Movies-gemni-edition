@@ -164,12 +164,12 @@ def scope_command(command: list[str], unit: str, limits: Limits) -> list[str]:
     if not all(tools.values()) or not (CGROUP_ROOT / "cgroup.controllers").is_file():
         raise GuardSetupError("cgroup_tools_unavailable")
     return [
-        tools["sudo"], "-n", "-E", tools["systemd-run"], "--scope", "--quiet",
+        tools["sudo"], "-n", "-E", tools["systemd-run"], "--scope", "--quiet", "--expand-environment=no",
         "--unit=" + unit,
         "--property=MemoryHigh=" + str(limits.memory_high),
         "--property=MemoryMax=" + str(limits.memory_max),
         "--property=MemorySwapMax=" + str(limits.swap_max),
-        "--property=MemoryOOMGroup=yes",
+        "--property=OOMPolicy=kill",
         "--property=CPUQuota=" + format(limits.cpu_quota_percent, ".12g") + "%",
         "--property=CPUWeight=20", "--property=IOWeight=20",
         "--property=TasksMax=2048", "--",
