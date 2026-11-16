@@ -1,0 +1,69 @@
+name: Inspect recovered Gemini output
+on:
+  push:
+    branches: [diagnostics/recovered-run-43820669497]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '43820669497'
+          name: movie-video-2
+          path: package
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '43820669497'
+          name: runner-diagnostics-2-1
+          path: resources
+      - name: Read production reports and bounded numeric resource telemetry
+        shell: python
+        run: |
+          import json
+          import re
+          from pathlib import Path
+          sensitive=re.compile(r'api.?key|token|secret|cookie|authorization|voice.?id',re.I)
+          def clean(v):
+              if isinstance(v,dict):
+                  return {k:'[redacted]' if sensitive.search(k) else clean(x) for k,x in v.items()}
+              if isinstance(v,list):
+                  return [clean(x) for x in v]
+              return v
+          print('PACKAGE_FILES',json.dumps([{'name':p.name,'bytes':p.stat().st_size} for p in sorted(Path('package').rglob('*')) if p.is_file()]))
+          for name in ['ai-production-report.json','run-manifest.json','quality-summary.json','thumbnail-sources.json']:
+              for p in Path('package').rglob(name):
+                  if p.stat().st_size>2_000_000:
+                      continue
+                  print('REPORT_BEGIN',name)
+                  print(json.dumps(clean(json.loads(p.read_text())),ensure_ascii=False)[:100000])
+                  print('REPORT_END')
+          for p in Path('resources').rglob('resources.jsonl'):
+              events=[]
+              for line in p.read_text().splitlines():
+                  try:
+                      events.append(json.loads(line))
+                  except ValueError:
+                      continue
+              def values(getter):
+                  out=[]
+                  for e in events:
+                      try:
+                          n=getter(e)
+                          if isinstance(n,(int,float)):
+                              out.append(n)
+                      except (KeyError,TypeError):
+                          pass
+                  return out
+              report={'events':len(events),'first':events[0] if events else None,'last':events[-1] if events else None,
+                      'non_sample_events':[e for e in events if e.get('event')!='sample'],
+                      'peak_cgroup_bytes':max(values(lambda e:e['cgroup']['memory.peak']),default=None),
+                      'peak_cgroup_swap_bytes':max(values(lambda e:e['cgroup']['memory.swap.current']),default=None),
+                      'minimum_host_available_bytes':min(values(lambda e:e['memory']['MemAvailable']),default=None),
+                      'minimum_workspace_free_bytes':min(values(lambda e:e['disk']['workspace']['free_bytes']),default=None)}
+              print('RESOURCE_SUMMARY',json.dumps(report,ensure_ascii=False))
