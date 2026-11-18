@@ -65,6 +65,38 @@ def test_planner_opens_each_review_on_the_intense_scene(monkeypatch, tmp_path):
     assert plan["previews"][0]["start"] == 10
 
 
+def test_cold_open_uses_cached_gemini_verdict_for_close_eligible_clips(monkeypatch, tmp_path):
+    rows = []
+    for index in range(2):
+        source = tmp_path / f"clip-{index}.mp4"
+        source.write_bytes(bytes([index]))
+        rows.append({"source": str(source), "start": 1.0, "duration": 4.0,
+                     "score": .7, "action_strength": .3, "intensity": .85,
+                     "visual_analysis": {"provider": "gemini"}})
+
+    monkeypatch.setattr(moments.gemini, "enabled", lambda: True)
+    monkeypatch.setattr("movie_pipeline.shots.get_frame", lambda path, seconds: (path, seconds))
+    responses = iter([{"winner": True}, {"winner": 2}])
+    calls = []
+
+    def compare(frames, *_):
+        calls.append(frames)
+        return next(responses)
+
+    monkeypatch.setattr(moments.gemini_editing, "frames_json", compare)
+    assert not moments._prefer_second_opening(rows, tmp_path)
+    assert moments._prefer_second_opening(rows, tmp_path)
+    assert moments._prefer_second_opening(rows, tmp_path)
+    assert len(calls) == 2
+    assert [round(seconds, 2) for _, seconds in calls[0]] == [1.15, 2.0, 3.5] * 2
+
+    rows[1]["intensity"] = .6
+    assert not moments._prefer_second_opening(rows, tmp_path)
+    monkeypatch.setattr(moments.gemini, "enabled", lambda: False)
+    rows[1]["intensity"] = .85
+    assert not moments._prefer_second_opening(rows, tmp_path)
+
+
 def test_music_bridges_out_of_a_scene_with_sound():
     timeline = [{"start": 0, "duration": 5, "type": "review-preview", "shots": [{"muted": False}]},
                 {"start": 5, "duration": 10, "type": "narration", "section_kind": "film"}]
