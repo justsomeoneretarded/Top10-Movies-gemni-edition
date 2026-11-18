@@ -12,11 +12,9 @@ The list's genre (from the title, brief and the films' TMDB genres) drives every
 Designs:
 1. Hero: number one's most genre-defining face, cut out over a darkened, blurred scene.
 2. Diagonal panels: the most genre-defining frame from three titles.
-3. Signature frame: the single most genre-defining frame of the list, full bleed.
-4. Service mark: number one with a large streaming-service mark (its real service when
-   listed; a random big service only when no featured film has a recognised listing).
-5. Headline: a two-to-four-word phrase from the title in huge letters beside a face.
-A service badge appears only when number one is listed on a recognised service.
+3-5. Alternative source-based compositions; the explicit paid trial can additionally
+     edit these same references with Gemini and independently review authenticity.
+6-10. Independently discovered, verified photos.
 Text is off unless THUMBNAIL_TEXT=minimal.
 """
 from __future__ import annotations
@@ -381,11 +379,11 @@ def gather(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]],
         for path in film.get("backdrops", [])[:10]:
             image = fetch_original(path, work / "stills") or fetch_still(path, work / "stills")
             if image is not None:
-                pool.append(Candidate(image, index, "tmdb-still"))
+                pool.append(Candidate(image, index, "tmdb-still", notes={"tmdb_path": path}))
         for path in film.get("posters", [])[:6]:
             image = fetch_original(path, work / "stills")
             if image is not None:
-                pool.append(Candidate(image, index, "tmdb-still"))  # text-free character posters
+                pool.append(Candidate(image, index, "tmdb-still", notes={"tmdb_path": path}))  # text-free character posters
         if index < len(trailers) and index < len(shot_sets):
             chosen = genre_shots(trailers[index], shot_sets[index], profile)
             seen = {id(shot) for shot, _, _ in chosen}
@@ -397,14 +395,15 @@ def gather(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]],
                 frames = []
                 for offset in (0.0, 0.35):
                     try:
-                        frames.append(get_frame(trailers[index], middle + offset))
+                        frames.append((get_frame(trailers[index], middle + offset), middle + offset))
                     except PipelineError:
                         continue
                 if frames:
-                    frame = max(frames, key=frame_sharpness)  # the steadier of two nearby frames
+                    frame, seconds = max(frames, key=lambda item: frame_sharpness(item[0]))  # the steadier frame
                     if frame.width >= 1280:
                         pool.append(Candidate(frame, index, "trailer-frame", genre_fit=fit, description=text,
-                                              action=min(1.0, float(shot.get("peak", 0)))))
+                                              action=min(1.0, float(shot.get("peak", 0))),
+                                              notes={"trailer_path": str(trailers[index]), "frame_seconds": seconds}))
         kept, hashes = [], []
         for candidate in pool:
             candidate.image = trim_bars(candidate.image)
@@ -416,7 +415,7 @@ def gather(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]],
             if sharp < 25:
                 continue  # soft, motion-blurred or out-of-focus frames never become thumbnails
             candidate.face, quality, good = face_quality(candidate.image)
-            candidate.notes = {"sharpness": round(sharp), "face_quality": round(quality, 2), "good_face": good}
+            candidate.notes = {**candidate.notes, "sharpness": round(sharp), "face_quality": round(quality, 2), "good_face": good}
             base, _ = heuristic(candidate.image, profile["exposure"])
             candidate.score = base * 0.4 + quality * (1.2 if good else 0.5) + candidate.genre_fit * 2.0 + min(sharp, 400) / 400
             value = _dhash(candidate.image)
@@ -894,6 +893,14 @@ def build(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]], 
     grade = profile["grade"]
 
     def save_design(number: int, image: Image.Image, style: str, chosen: list[Candidate], **extra):
+        if number in (3, 4, 5):
+            from .paid_thumbnails import edit
+            image, paid = edit(number, image, chosen, films, title, work)
+            if paid:
+                extra.update(paid)
+                if paid.get("image_status") == "success":
+                    extra["original_style"] = style
+                    style = "paid-reference-edit"
         image = image.convert("RGB")
         from .editorial_policy import explicit_genre
         accent = {"action":"#e52a35", "adventure":"#df8c27", "horror":"#b92338",
@@ -915,8 +922,8 @@ def build(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]], 
                 break
         return chosen
 
-    # Every design uses the titles' own official stills and trailer frames, uncut:
-    # no generated backgrounds and no pasted-on actors (both read as fake).
+    # The first five designs start from the titles' own official stills and
+    # verified trailer frames. Paid edits of 3-5 must pass a separate identity check.
     # 1. Hero: number one's best face, big and lit.
     hero = picker.take(picker.any(film=0, faces=True))
     save_design(1, finish(face_crop(hero, face_height=0.52, face_x=0.6, face_y=0.42), grade), "hero", [hero])

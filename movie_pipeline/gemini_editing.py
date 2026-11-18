@@ -200,6 +200,8 @@ VIDEO_GAP_SECONDS = 20.0  # space video requests so the free per-minute token li
 def video_models(client) -> list[str]:
     """Flash-Lite first for video (its own free daily allowance), keeping the main model for writing."""
     first = os.getenv("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite").strip() or "gemini-3.5-flash-lite"
+    if gemini.paid_trial():
+        return [first]  # no second paid model after an uncertain charged outcome
     return list(dict.fromkeys([first, getattr(client, "vision_model", first)]))
 
 
@@ -235,7 +237,7 @@ def _temporary(error) -> bool:
 
 def _forget_attempt(url: str, error) -> None:
     """After a temporary failure, let the same video be tried once more later in the run."""
-    if _temporary(error) and _FAILURES.get(url, 0) < 1:
+    if not gemini.paid_trial() and _temporary(error) and _FAILURES.get(url, 0) < 1:
         _FAILURES[url] = _FAILURES.get(url, 0) + 1
         _ATTEMPTED.discard(url)
 
@@ -486,7 +488,7 @@ def analyse_source(source: Path) -> dict | None:
             response = video_json(client, prompt, actual_duration, youtube_url=url)
         except gemini.GeminiUnavailable as error:
             # The link route failed (rejected link, restricted video...): send Gemini the downloaded file itself.
-            if "quota" in str(error) or "authentication" in str(error):
+            if gemini.paid_trial() or "quota" in str(error) or "authentication" in str(error):
                 raise
             route = "uploaded_file"
             uploaded = client.upload_video(_proxy_copy(source), timeout=300)

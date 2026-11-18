@@ -135,7 +135,7 @@ def test_paid_response_without_usage_keeps_full_reservation():
                                   max_output_tokens=32768, thinking="low") == {"answer": "ok"}
     report = paid_budget.snapshot()
     assert report["requests"] == 1
-    assert report["estimated_usd"] == pytest.approx(0.65736)
+    assert report["estimated_usd"] == pytest.approx(0.657588)
     assert all(r["status"] == "reserved" for r in report["reservations"].values())
 
 
@@ -174,3 +174,17 @@ def test_paid_identity_and_usage_do_not_expose_credentials(monkeypatch):
     assert "paid-private-test-key" not in rendered
     assert "unused-secondary-test-key" not in rendered
     assert "Private trial prompt" not in rendered
+
+
+@pytest.mark.parametrize("prompt,blocked", [(520, False), (558, True)])
+def test_counted_input_headroom_is_reserved_not_unbounded(prompt, blocked):
+    usage = {"promptTokenCount": prompt, "candidatesTokenCount": 200,
+             "thoughtsTokenCount": 100, "totalTokenCount": prompt + 300}
+    session = Session(Response({"totalTokens": 500}), Response(answer(usage)))
+    provider = gemini.GeminiClient(session=session)
+    if blocked:
+        with pytest.raises(gemini.GeminiUnavailable):
+            provider.generate_json("Headroom check", SCHEMA, max_output_tokens=32768, thinking="low")
+    else:
+        assert provider.generate_json("Headroom check", SCHEMA, max_output_tokens=32768, thinking="low") == {"answer": "ok"}
+    assert bool(paid_budget.snapshot().get("blocked")) is blocked

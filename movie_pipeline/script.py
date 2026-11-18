@@ -720,6 +720,10 @@ class Writer:
             # Length never rejects a complete usable section. Measured narration
             # timing may request a shorter opening later, without cutting words.
             return complete(cleaned)
+        if paid_budget.enabled():
+            from .gemini import record_event
+            record_event("script", "local-template", "fallback", "paid_narration_semantic_validation",
+                         details={"opening": opening, "closing": closing})
         if best:
             return complete(best)
         if opening:

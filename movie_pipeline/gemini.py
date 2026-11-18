@@ -139,7 +139,8 @@ def identity():
         **_models(),
         "schema_version": SCHEMA_VERSION,
         "free_only": not paid_trial(),
-        **({"script_model": script_model(), "paid_trial": True} if paid_trial() else {}),
+        **({"script_model": script_model(), "paid_trial": True,
+            "video_model": os.getenv("GEMINI_VIDEO_MODEL", "gemini-3.8-flash").strip()} if paid_trial() else {}),
     }
 
 
@@ -449,7 +450,7 @@ class GeminiClient:
             digest = hashlib.sha256(json.dumps(
                 {"model": model, "payload": payload}, sort_keys=True,
                 separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
-            reservation = paid_budget.reserve(model, count["totalTokens"], output, stage,
+            reservation = paid_budget.reserve(model, math.ceil(count["totalTokens"] * 1.05) + 32, output, stage,
                                               request_hash=digest)
         except (paid_budget.PaidBudgetExceeded, TypeError, ValueError) as error:
             reason = str(error) if isinstance(error, paid_budget.PaidBudgetExceeded) else "paid_budget_invalid_request"
