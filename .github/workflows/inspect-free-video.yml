@@ -1,0 +1,100 @@
+name: Inspect completed free video
+on: push
+permissions:
+  contents: read
+  actions: read
+jobs:
+  reports:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: movie-video-3
+          run-id: 44353630318
+          github-token: ${{ github.token }}
+          path: package
+      - uses: actions/download-artifact@v4
+        with:
+          name: gemini-usage-produce
+          run-id: 44353630318
+          github-token: ${{ github.token }}
+          path: usage
+      - uses: actions/download-artifact@v4
+        with:
+          name: runner-diagnostics-3-1
+          run-id: 44353630318
+          github-token: ${{ github.token }}
+          path: resources
+      - uses: actions/download-artifact@v4
+        with:
+          name: audio-inspection-3
+          run-id: 44353630318
+          github-token: ${{ github.token }}
+          path: audio
+      - name: Read existing reports without model calls
+        shell: python
+        run: |
+          import collections,json,re
+          from pathlib import Path
+          def scrub(value):
+              if isinstance(value,dict):
+                  return {k:scrub(v) for k,v in value.items() if not re.search(r"api.?key|secret|cookie|authorization|voice.?key|voice.?id|credential", k, re.I)}
+              if isinstance(value,list): return [scrub(v) for v in value[:100]]
+              if isinstance(value,str):
+                  value=re.sub(r"AIza[A-Za-z0-9_-]{20,}", "[redacted]", value)
+                  value=re.sub(r"voicekey_[A-Za-z0-9_-]+", "[redacted]", value)
+                  return value[:1800]
+              return value
+          files=[p for p in Path("package").rglob("*") if p.is_file()]
+          print("PACKAGE_FILES",json.dumps([{"file":str(p.relative_to("package")),"bytes":p.stat().st_size} for p in sorted(files)]))
+          for p in files:
+              if p.suffix==".json" and p.stat().st_size<2000000:
+                  data=json.loads(p.read_text())
+                  print("REPORT_KEYS",p.name,json.dumps(list(data)[:60] if isinstance(data,dict) else {"items":len(data)}))
+                  if any(x in p.name for x in ("manifest","quality","visual-review","audio-review","ai-production","thumbnail-sources","soundtrack","scene","production-report","editorial")):
+                      print("REPORT",p.name,json.dumps(scrub(data),ensure_ascii=True)[:45000])
+                  elif p.name=="script.json" and isinstance(data,dict):
+                      print("SCRIPT",json.dumps(scrub({"sections":[{"kind":s.get("kind"),"film":s.get("film"),"paragraphs":s.get("paragraphs")} for s in data.get("sections",[])]}))[:15000])
+          counts=collections.Counter()
+          for p in Path("usage").rglob("*.jsonl"):
+              for line in p.read_text().splitlines():
+                  row=json.loads(line)
+                  d=row.get("details",{})
+                  counts[(row.get("stage"),row.get("backend"),row.get("status"),row.get("reason"),d.get("model"))]+=1
+          print("ACTUAL_USAGE",json.dumps([{"stage":k[0],"backend":k[1],"status":k[2],"reason":k[3],"model":k[4],"count":n} for k,n in counts.items()]))
+          for p in Path("audio").rglob("*.json"):
+              if p.stat().st_size<1000000:
+                  print("AUDIO_REPORT",p.name,json.dumps(scrub(json.loads(p.read_text())))[:16000])
+          for p in Path("resources").rglob("resources.jsonl"):
+              lines=p.read_text().splitlines()
+              if lines:
+                  print("RESOURCE_FIRST",json.dumps(scrub(json.loads(lines[0]))))
+                  print("RESOURCE_LAST",json.dumps(scrub(json.loads(lines[-1]))))
+          for p in files:
+              if p.name=="recommended-title.txt": print("RECOMMENDED_TITLE",scrub(p.read_text()))
+      - name: Thumbnail contact sheet
+        shell: bash
+        run: |
+          python -m pip install --quiet Pillow
+          python - <<'PY'
+          import base64,io
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          files=sorted(Path("package").rglob("thumbnail-*.jpg"))[:10]
+          sheet=Image.new("RGB",(1600,600),"#111111")
+          draw=ImageDraw.Draw(sheet)
+          for i,p in enumerate(files):
+              with Image.open(p) as image:
+                  image=image.convert("RGB")
+                  image.thumbnail((320,260))
+                  x=(i%5)*320
+                  y=(i//5)*300
+                  sheet.paste(image,(x,y+22))
+                  draw.text((x+5,y+5),p.name,fill="white")
+          output=io.BytesIO()
+          sheet.save(output,"JPEG",quality=85)
+          print("THUMBNAIL_IMAGE_BEGIN")
+          print(base64.b64encode(output.getvalue()).decode())
+          print("THUMBNAIL_IMAGE_END")
+          PY
