@@ -1,1 +1,0 @@
-"""Automated movie countdown production."""

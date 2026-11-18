@@ -1,0 +1,39 @@
+name: Paid key metadata check
+on: push
+permissions:
+  contents: read
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    env:
+      GEMINI_API_KEY_PRO: ${{ secrets.GEMINI_API_KEY_PRO }}
+      GEMINI_API_PRO: ${{ secrets.GEMINI_API_PRO }}
+      GEINI_API_KEY_PRO: ${{ secrets.GEINI_API_KEY_PRO }}
+      GEINI_API_PRO: ${{ secrets.GEINI_API_PRO }}
+      GEMINI_PRO_API_KEY: ${{ secrets.GEMINI_PRO_API_KEY }}
+      GEMINI_API_PRO_KEY: ${{ secrets.GEMINI_API_PRO_KEY }}
+    steps:
+      - name: Inspect presence and authenticated model metadata only
+        shell: python
+        run: |
+          import json, os, urllib.request, urllib.error
+          names = ["GEMINI_API_KEY_PRO","GEMINI_API_PRO","GEINI_API_KEY_PRO","GEINI_API_PRO","GEMINI_PRO_API_KEY","GEMINI_API_PRO_KEY"]
+          present = [n for n in names if os.environ.get(n, "").strip()]
+          print("Configured paid-secret aliases:", ", ".join(present) or "none")
+          if not present:
+              raise SystemExit("No paid-key alias found; exact secret name is required.")
+          selected = present[0]
+          req = urllib.request.Request("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000", headers={"x-goog-api-key": os.environ[selected], "Accept": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=25) as response:
+                  payload = json.loads(response.read(2000001))
+          except urllib.error.HTTPError as error:
+              print("Metadata HTTP status:", error.code)
+              raise SystemExit("Key authentication/model metadata unavailable; response body withheld.")
+          except Exception:
+              raise SystemExit("Metadata network/response check unavailable; details withheld.")
+          models = {x.get("name","").removeprefix("models/"): x.get("supportedGenerationMethods",[]) for x in payload.get("models",[]) if isinstance(x,dict)}
+          for name in ["gemini-4-carbon", "gemini-3.8-flash", "gemini-3-pro-image"]:
+              print(name, "generateContent listed:", "generateContent" in models.get(name,[]))
+          print("Metadata only. No generation request and no billing/paid-capability claim.")
