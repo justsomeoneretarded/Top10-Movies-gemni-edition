@@ -1,7 +1,8 @@
 """Bounded Gemini Developer API transport; local backends remain the fallback.
 
 Uses generateContent over requests, without SDK startup or network at import.
-Only models documented with a free API tier are permitted. The API key must
+Ordinary runs permit only models documented with a free API tier. A separately
+opted-in paid trial uses a durable conservative reservation ledger. The normal API key must
 belong to an unbilled Free Tier project: Google has no per-request free-only flag.
 See https://ai.google.dev/gemini-api/docs/pricing (verified 2026-11-07).
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import io
@@ -23,6 +25,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import requests
 
+from . import paid_budget
+
 SCHEMA_VERSION = 1
 FREE_TEXT_MODELS = frozenset({
     "gemini-3.8-flash", "gemini-3.5-flash-lite",
@@ -33,6 +37,20 @@ FREE_TTS_MODELS = frozenset({
 # These Search models are available only to grandfathered prior users.
 GROUNDING_MODELS = frozenset({"gemini-2.5-flash", "gemini-2.5-flash-lite"})
 FREE_MODELS = FREE_TEXT_MODELS | FREE_TTS_MODELS | GROUNDING_MODELS
+PAID_TEXT_MODELS = frozenset({"gemini-4-carbon"})
+PAID_IMAGE_MODELS = frozenset({"gemini-3-pro-image"})
+
+
+def paid_trial():
+    """Paid requests require both explicit gates; ordinary defaults stay free."""
+    return paid_budget.enabled()
+
+
+def script_model():
+    return (os.getenv("GEMINI_SCRIPT_MODEL", "gemini-4-carbon").strip()
+            if paid_trial() else _models()["text_model"])
+
+
 TEMPORARY_BLOCK_SECONDS = 90.0  # a busy, slow or rate-limited model is retried after this pause
 _ACTUAL_MODELS = {}
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -62,6 +80,11 @@ _BUDGET = _Budget()
 
 def _keys() -> list[str]:
     """Every configured key, in order: the main key, then GEMINI_API_KEY_2 / _3 (or GEMINI_API_2 / _3)."""
+    if paid_trial():
+        # The isolated workflow maps its PRO secret to this one name. Never use
+        # aliases or rotate into unrelated free-project keys in a paid trial.
+        key = os.getenv("GEMINI_API_KEY", "").strip()
+        return [key] if key else []
     names = (("GEMINI_API_KEY", "GEMINI_API"), ("GEMINI_API_KEY_2", "GEMINI_API_2"), ("GEMINI_API_KEY_3", "GEMINI_API_3"))
     keys = [(os.getenv(a) or os.getenv(b) or "").strip() for a, b in names]
     return list(dict.fromkeys(key for key in keys if key))
@@ -78,7 +101,7 @@ def _key():
 def _switch_key(reason: str) -> bool:
     """Move to the next key after the current one's free quota is used up or it is rejected."""
     keys = _keys()
-    if _KEY_INDEX[0] + 1 >= len(keys):
+    if paid_trial() or _KEY_INDEX[0] + 1 >= len(keys):
         return False
     _KEY_INDEX[0] += 1
     _BUDGET.blocked = ""
@@ -115,7 +138,8 @@ def identity():
         "research_mode": _research_mode(),
         **_models(),
         "schema_version": SCHEMA_VERSION,
-        "free_only": True,
+        "free_only": not paid_trial(),
+        **({"script_model": script_model(), "paid_trial": True} if paid_trial() else {}),
     }
 
 
@@ -154,7 +178,7 @@ def record_event(stage, backend, status, reason="", details=None):
     safe = {}
     if isinstance(details, dict):
         for key, value in details.items():
-            if key == "model" and isinstance(value, str) and value in FREE_MODELS:
+            if key == "model" and isinstance(value, str) and value in (FREE_MODELS | PAID_TEXT_MODELS | PAID_IMAGE_MODELS):
                 safe["model"] = value
             elif (key == "error_class" and isinstance(value, str)
                   and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value)
@@ -185,7 +209,10 @@ def _unavailable(reason):
 
 
 def _check_model(model, allowed):
-    if model not in allowed:
+    paid_allowed = ((PAID_TEXT_MODELS if allowed == FREE_TEXT_MODELS else
+                     PAID_TEXT_MODELS | PAID_IMAGE_MODELS if allowed == FREE_MODELS else frozenset())
+                    if paid_trial() else frozenset())
+    if model not in allowed | paid_allowed:
         raise _unavailable("model_not_available_on_free_tier")
 
 
@@ -194,7 +221,7 @@ def get_client():
     global _CLIENT, _CLIENT_SIGNATURE
     if not enabled():
         raise _unavailable("gemini_disabled_or_key_missing")
-    signature = (_key(), tuple(_models().items()), _research_mode())
+    signature = (_key(), tuple(_models().items()), _research_mode(), paid_trial(), script_model())
     with _CLIENT_LOCK:
         if _CLIENT is None or signature != _CLIENT_SIGNATURE:
             _CLIENT = GeminiClient()
@@ -369,6 +396,8 @@ class GeminiClient:
     def _request(self, model, payload, stage, video_seconds=0.0):
         """Send the request; when the current key's quota is used up or the key is rejected,
         repeat it with the next configured key."""
+        if paid_trial():
+            return self._paid_request(model, payload, stage, video_seconds)
         while True:
             try:
                 return self._request_once(model, payload, stage, video_seconds)
@@ -376,6 +405,106 @@ class GeminiClient:
                 text = str(error)
                 if self._fixed_key or not ("quota_exhausted" in text or "authentication" in text) or not _switch_key(text):
                     raise
+
+    def _paid_request(self, model, payload, stage, video_seconds=0.0):
+        """Count, durably reserve, then generate once; unknown charges stay reserved."""
+        if model not in paid_budget.RATES:
+            raise _unavailable("paid_model_not_allowed")
+        if not isinstance(payload, dict) or payload.get("tools") or payload.get("cachedContent"):
+            raise _unavailable("paid_tools_or_cache_not_allowed")
+        config = payload.get("generationConfig")
+        if not isinstance(config, dict):
+            raise _unavailable("paid_output_limit_required")
+        output = config.get("maxOutputTokens")
+        if not isinstance(output, int) or isinstance(output, bool) or output <= 0:
+            raise _unavailable("paid_output_limit_required")
+        if config.get("candidateCount", 1) != 1:
+            raise _unavailable("paid_single_candidate_required")
+        if model in PAID_IMAGE_MODELS:
+            image_config = config.get("imageConfig", {})
+            if (stage != "image" or not isinstance(image_config, dict)
+                    or image_config.get("imageSize") != "2K"
+                    or config.get("responseModalities") != ["TEXT", "IMAGE"]):
+                raise _unavailable("paid_image_requires_single_2k_output")
+        elif stage == "image" or config.get("responseModalities", ["TEXT"]) != ["TEXT"]:
+            raise _unavailable("paid_text_output_required")
+        if model in PAID_TEXT_MODELS and config.get("thinkingConfig") != {"thinkingLevel": "low"}:
+            raise _unavailable("paid_carbon_low_thinking_required")
+        headers = {"x-goog-api-key": self._api_key, "Content-Type": "application/json"}
+        if not self._api_key:
+            raise _unavailable("paid_key_missing")
+        try:
+            counted = self.session.post(
+                _ENDPOINT + "/" + model + ":countTokens", headers=headers,
+                json={"generateContentRequest": {"model": "models/" + model, **payload}},
+                timeout=(10, 60))
+            count = counted.json() if counted.status_code == 200 else {}
+        except (requests.RequestException, TypeError, ValueError):
+            raise _unavailable("paid_token_count_unavailable") from None
+        if not isinstance(count, dict) or not paid_budget._integer(count.get("totalTokens")) or count["totalTokens"] <= 0:
+            raise _unavailable("paid_token_count_unavailable")
+        try:
+            # Only a digest is retained, preventing retries of an identical
+            # request with an unknown charged outcome, including across processes.
+            digest = hashlib.sha256(json.dumps(
+                {"model": model, "payload": payload}, sort_keys=True,
+                separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+            reservation = paid_budget.reserve(model, count["totalTokens"], output, stage,
+                                              request_hash=digest)
+        except (paid_budget.PaidBudgetExceeded, TypeError, ValueError) as error:
+            reason = str(error) if isinstance(error, paid_budget.PaidBudgetExceeded) else "paid_budget_invalid_request"
+            raise _unavailable(reason) from None
+        timeout = (10, 900 if model in PAID_TEXT_MODELS else 180)
+        with _BUDGET.lock:
+            if (_BUDGET.video_seconds + video_seconds
+                    > _number("GEMINI_MAX_VIDEO_SECONDS", 3600, 1, 28800)):
+                # A reservation is deliberately retained on uncertain paths.
+                raise _unavailable("video_budget_exhausted")
+            delay = max(0.0, _BUDGET.next_request - time.monotonic())
+            if delay:
+                time.sleep(min(delay, 30))
+            _BUDGET.requests += 1
+            _BUDGET.video_seconds += video_seconds
+            _BUDGET.next_request = time.monotonic() + _number("GEMINI_MIN_INTERVAL_SECONDS", 0, 0, 30)
+            started = time.monotonic()
+            try:
+                response = self.session.post(
+                    _ENDPOINT + "/" + model + ":generateContent",
+                    headers=headers, json=payload, timeout=timeout)
+                data = response.json()
+            except (requests.RequestException, ValueError, TypeError) as error:
+                record_event(stage, "gemini", "request_failed", "paid_unknown_outcome", details={
+                    "model": model, "error_class": type(error).__name__,
+                    "request_count": _BUDGET.requests,
+                    "reserved_estimated_usd": reservation["estimated_usd"],
+                    "elapsed_ms": round((time.monotonic() - started) * 1000)})
+                raise _unavailable("paid_request_failed_no_retry") from None
+            if response.status_code != 200 or not isinstance(data, dict) or "error" in data:
+                record_event(stage, "gemini", "request_failed", "paid_http_error_no_retry", details={
+                    "model": model, "http_status": response.status_code,
+                    "request_count": _BUDGET.requests,
+                    "reserved_estimated_usd": reservation["estimated_usd"]})
+                raise _unavailable("paid_request_rejected_no_retry")
+            usage = data.get("usageMetadata", {})
+            try:
+                ledger = paid_budget.settle(reservation, usage)
+            except paid_budget.PaidBudgetExceeded:
+                raise _unavailable("paid_budget_ledger_unavailable_after_request") from None
+            details = {"model": model, "http_status": response.status_code,
+                       "request_count": ledger["requests"],
+                       "estimated_usd": ledger["estimated_usd"]}
+            if isinstance(usage, dict):
+                for source, target in (("promptTokenCount", "input_tokens"),
+                                       ("candidatesTokenCount", "output_tokens"),
+                                       ("thoughtsTokenCount", "thinking_tokens"),
+                                       ("cachedContentTokenCount", "cached_tokens"),
+                                       ("totalTokenCount", "total_tokens")):
+                    if paid_budget._integer(usage.get(source)):
+                        details[target] = usage[source]
+            record_event(stage, "gemini", "received", details=details)
+            if ledger.get("blocked"):
+                raise _unavailable("paid_usage_exceeded_reservation")
+            return data
 
     def _request_once(self, model, payload, stage, video_seconds=0.0):
         _check_model(model, FREE_MODELS)
@@ -531,7 +660,8 @@ class GeminiClient:
             parts.append({"file_data": {"mime_type": video_file["mime_type"], "file_uri": video_file["uri"]}})
         parts.append({"text": prompt})
         try:
-            max_output_tokens = max(256, min(16384, int(max_output_tokens)))
+            limit = 32768 if paid_trial() and model in PAID_TEXT_MODELS else 16384
+            max_output_tokens = max(256, min(limit, int(max_output_tokens)))
             json.dumps(schema, allow_nan=False)
         except (TypeError, ValueError):
             raise _unavailable("invalid_schema_or_output_budget") from None
@@ -539,7 +669,7 @@ class GeminiClient:
                   "responseMimeType": "application/json", "responseJsonSchema": schema}
         if thinking not in {"low", "medium", "high"}:
             raise _unavailable("invalid_thinking_level")
-        config["thinkingConfig"] = {"thinkingLevel": thinking}
+        config["thinkingConfig"] = {"thinkingLevel": "low" if paid_trial() and model in PAID_TEXT_MODELS else thinking}
         if youtube_url is not None or video_file is not None:
             # 66 instead of 258 tokens per frame: enough to describe scenes, a quarter of the quota.
             config["mediaResolution"] = "MEDIA_RESOLUTION_LOW"
@@ -548,6 +678,8 @@ class GeminiClient:
         try:
             data = self._request(model, payload, stage, video_seconds)
         except GeminiUnavailable as error:
+            if paid_trial():
+                raise
             fallback_reason = str(error)
             if fallback_reason not in {"model_unavailable", "model_read_timeout", "service_unavailable"} or model != "gemini-3.8-flash":
                 raise
