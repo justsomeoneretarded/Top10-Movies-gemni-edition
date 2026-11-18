@@ -507,6 +507,8 @@ class GeminiClient:
             return data
 
     def _request_once(self, model, payload, stage, video_seconds=0.0):
+        if paid_trial():
+            return self._paid_request(model, payload, stage, video_seconds)
         _check_model(model, FREE_MODELS)
         retries = int(_number("GEMINI_MAX_RETRIES", 1, 0, 2))
         max_wait = 30

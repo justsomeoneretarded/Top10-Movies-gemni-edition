@@ -207,8 +207,15 @@ def settle(reservation, usage) -> dict:
         # reservation rather than guessing how many output tokens were image data.
         if row["model"] == IMAGE_MODEL:
             row["usage_verified"] = True
+            if prompt > row["input_tokens"] or output > row["max_output_tokens"]:
+                ledger["blocked"] = "usage_exceeded_reservation"
+                cost = (prompt * input_rate / 1_000_000
+                        + output * output_rate / 1_000_000 + IMAGE_2K_USD)
+                row["estimated_usd"] = max(row["estimated_usd"], round(cost, 12))
+                row["input_tokens"] = max(row["input_tokens"], prompt)
+                row["output_tokens"] = max(row["output_tokens"], output)
             _write(path, ledger)
-            return ledger
+            return _totals(ledger)
         cost = prompt * input_rate / 1_000_000 + output * output_rate / 1_000_000
         if prompt > row["input_tokens"] or output > row["max_output_tokens"]:
             ledger["blocked"] = "usage_exceeded_reservation"
