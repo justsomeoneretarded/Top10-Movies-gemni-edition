@@ -21,7 +21,15 @@ jobs:
       - name: Install test media dependencies
         # Hard per-attempt limits, a mirror switch, then a static FFmpeg from GitHub: never hangs.
         timeout-minutes: 35
-        run: bash scripts/install_system_packages.sh ffmpeg fonts-dejavu-core
+        run: |
+          # Hosted Ubuntu already provides these in most images. Verify actual
+          # binaries/font before avoiding an unrelated network package refresh.
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null && test -r /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf; then
+            ffmpeg -version
+            ffprobe -version
+          else
+            bash scripts/install_system_packages.sh ffmpeg fonts-dejavu-core
+          fi
       - run: python -m pip install -e '.[test]'
       - name: Run tests
         timeout-minutes: 25

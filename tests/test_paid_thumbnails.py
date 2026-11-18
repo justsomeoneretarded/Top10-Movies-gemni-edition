@@ -140,7 +140,7 @@ def test_success_uses_metered_image_transport_and_independent_review(trial, tmp_
     prompt = payload["contents"][0]["parts"][-1]["text"]
     assert "Verified Drama" in prompt and "Two sisters" in prompt
     assert "Preserve the actual actors" in prompt and "No typography" in prompt
-    assert client.reviews[0]["max_output_tokens"] == 384
+    assert client.reviews[0]["max_output_tokens"] == 2048
     assert len(client.reviews[0]["images"]) == 2
     assert report["image_status"] == "success"
     assert report["image_backend"] == "gemini-reference-image-edit"
