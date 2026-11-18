@@ -1,0 +1,56 @@
+name: Inspect paid trial receipts
+on: push
+permissions:
+  contents: read
+  actions: read
+jobs:
+  reports:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download existing usage receipts only
+        uses: actions/download-artifact@v4
+        with:
+          name: gemini-usage-produce
+          run-id: 44301060608
+          github-token: ${{ github.token }}
+          path: reports/usage
+      - name: Download existing budget ledger only
+        uses: actions/download-artifact@v4
+        with:
+          name: runner-diagnostics-1-1
+          run-id: 44301060608
+          github-token: ${{ github.token }}
+          path: reports/budget
+      - name: Print allowlisted evidence, without calling any model
+        shell: python
+        run: |
+          import json, re
+          from pathlib import Path
+          def safe(value):
+              if isinstance(value, bool) or value is None or isinstance(value, (int,float)):
+                  return value
+              if isinstance(value, str) and len(value) <= 180 and re.fullmatch(r"[A-Za-z0-9 _.:/()–-]*", value) and not any(x in value.lower() for x in ("aiza", "http", "token=", "key=")):
+                  return value
+              return "[withheld]"
+          for path in sorted(Path("reports").rglob("*")):
+              if not path.is_file() or path.stat().st_size > 2000000:
+                  continue
+              if path.name.endswith(".jsonl"):
+                  for line in path.read_text().splitlines()[:100]:
+                      row = json.loads(line)
+                      clean = {k:safe(row[k]) for k in ("time","stage","backend","status","reason") if k in row}
+                      details = row.get("details",{})
+                      clean["details"] = {k:safe(details[k]) for k in ("model","http_status","error_class","input_tokens","output_tokens","thinking_tokens","total_tokens","request_count","estimated_usd","reserved_estimated_usd") if k in details}
+                      print("USAGE", json.dumps(clean, sort_keys=True))
+              elif path.name == "paid-budget.json":
+                  row = json.loads(path.read_text())
+                  fields = ("schema_version","estimate_only","run_id","requests","images","input_tokens","output_tokens","estimated_usd","blocked")
+                  print("BUDGET", json.dumps({k:safe(row[k]) for k in fields if k in row},sort_keys=True))
+                  for item in row.get("reservations",{}).values():
+                      print("RESERVATION", json.dumps({k:safe(item[k]) for k in ("model","stage","status","input_tokens","max_output_tokens","output_tokens","estimated_usd","thought_tokens","usage_verified") if k in item},sort_keys=True))
+              elif "preflight" in path.name and path.suffix == ".json":
+                  row = json.loads(path.read_text())
+                  fields = ("schema_version","inference_verified","failure","research","voice","estimated_budget_usd","paid_model")
+                  print("PREFLIGHT", json.dumps({k:safe(row[k]) for k in fields if k in row},sort_keys=True))
+                  print("MODEL_CATALOG", json.dumps({k:safe(v) for k,v in row.get("listed_models",{}).items()},sort_keys=True))
