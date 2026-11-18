@@ -12,7 +12,7 @@ import os
 
 import numpy as np
 from .core import ffmpeg, key, save_json, probe
-from . import gemini_editing
+from . import gemini, gemini_editing
 from . import intensity as peak
 
 def _overlap(a,b):
@@ -193,6 +193,63 @@ def hook_order(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     return hooks,rest
 
 
+def _cold_open_score(clip: dict) -> float:
+    return clip.get("intensity", .5) + .35 * (clip["action_strength"] + clip["score"])
+
+
+def _prefer_second_opening(opening: list[dict], work: Path) -> bool:
+    """Compare the first beats of two already validated, closely ranked clips."""
+    if len(opening) != 2 or not gemini.enabled():
+        return False
+    if abs(_cold_open_score(opening[0]) - _cold_open_score(opening[1])) > .08:
+        return False
+    # Only compare footage that passed the existing Gemini source eligibility checks.
+    if not all(clip.get("visual_analysis") for clip in opening):
+        return False
+
+    from .shots import get_frame
+
+    windows = [(Path(clip["source"]), clip["start"], clip["duration"]) for clip in opening]
+    fingerprints = [(gemini_editing.source_fingerprint(path), start, length)
+                    for path, start, length in windows]
+    if any(identity.get("missing") for identity, _, _ in fingerprints):
+        return False
+    token = key("cold-open-v1", gemini.identity(), fingerprints)
+    cache = work / f"{token}.json"
+    try:
+        result = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        result = None
+    if type(result) is int and result in (0, 1, 2):
+        return result == 2
+
+    try:
+        frames = [get_frame(path, start + offset)
+                  for path, start, length in windows
+                  for offset in (.15, 1.0, min(2.5, length - .1))]
+    except (OSError, RuntimeError, ValueError):
+        return False
+    verdict = gemini_editing.frames_json(
+        frames,
+        "Compare two movie countdown openings from their first few seconds. "
+        "Images 1–3 show clip 1 in order. Images 4–6 show clip 2 in order. "
+        "Pick the clip whose opening action or emotion is immediately clear "
+        "without knowing the plot. Use 0 if the evidence is unclear or tied. "
+        "Judge only the visible images.",
+        {"type": "object", "properties": {"winner": {"type": "integer", "enum": [0, 1, 2]}},
+         "required": ["winner"]},
+        "cold_open_comparison", 128,
+    )
+    winner = verdict.get("winner") if verdict else None
+    if type(winner) is not int or winner not in (0, 1, 2):
+        return False
+    try:
+        save_json(cache, winner)
+    except OSError:
+        pass
+    return winner == 2
+
+
 def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recognizer,work):
     """Return opening, natural rank previews, and optional review insertions.
 
@@ -203,7 +260,6 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
         return None
     from .core import duration
     work.mkdir(parents=True,exist_ok=True)
-    from . import gemini
     if gemini.enabled():
         from .gemini_editing import analyse_source, source_rounds
         # Cache advisory hints in fair rounds before per-film ranking consumes its budget.
@@ -218,7 +274,7 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
     energetic=sorted([{**clip,"film_index":i} for i,rows in options.items() for clip in rows
                       if not any(h["source"]==clip["source"] and _overlap(h,clip) for h in kept[i])
                       and ((clip["action_strength"]>.025 and clip["motion"]>4) or clip.get("intensity",0)>=.72)],
-                     key=lambda c:-(c.get("intensity",.5)+.35*(c["action_strength"]+c["score"])))
+                     key=lambda c: -_cold_open_score(c))
     for candidate in energetic:
         if len(opening)>=2 or sum(c["duration"] for c in opening)>=12:
             break
@@ -230,6 +286,9 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
             clip=None
         if clip and _usable(selector,clip,shot_lookup) and sum(c["duration"] for c in opening)+clip["duration"]<=18:
             opening.append(clip);used.append(clip);_reserve(selector,clip)
+    opening_reordered = _prefer_second_opening(opening, work)
+    if opening_reordered:
+        opening.reverse()
     if not opening:
         all_clips=[{**clip,"film_index":i} for i,rows in options.items() for clip in rows]
         if all_clips:
@@ -284,6 +343,7 @@ def plan_episode(selector,pools,shot_lookup,films,sections,speech,dialogue,recog
                 inserts[section_index]={body_positions[int(p)]:clip for p,clip in zip(positions,remaining)}
     return {"opening":opening,"previews":previews,"inserts":inserts,
             "report":{"opening_seconds":sum(c["duration"] for c in opening),
+                      "opening_reordered_by_gemini":opening_reordered,
                       "visual_hint_sources":len({c["source"] for c in used if c.get("visual_analysis")}),
                       "visual_hint_timing_authority":"local_shots_and_complete_transcript",
                       "native_moments":sum(c.get("native_verified",False) and not c.get("muted",True) for c in used),"review_counts":{str(i):1+len(inserts.get(i,{})) for i in previews}}}
