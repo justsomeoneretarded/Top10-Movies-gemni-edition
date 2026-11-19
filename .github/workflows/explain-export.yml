@@ -1,0 +1,65 @@
+name: Explain completed export warnings
+on: push
+permissions:
+  contents: read
+  actions: read
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: movie-video-3
+          run-id: 44353630318
+          github-token: ${{ github.token }}
+          path: package
+      - name: Inspect existing review and dark intervals only
+        shell: bash
+        run: |
+          python -m pip install --quiet Pillow
+          python - <<'PY'
+          import base64,io,json,re,subprocess
+          from pathlib import Path
+          from html.parser import HTMLParser
+          from PIL import Image,ImageDraw
+          class Rows(HTMLParser):
+              def __init__(self):
+                  super().__init__(); self.rows=[]; self.row=[]; self.text=None
+              def handle_starttag(self,tag,attrs):
+                  if tag=="tr": self.row=[]
+                  if tag=="td": self.text=""
+              def handle_data(self,data):
+                  if self.text is not None: self.text+=data
+              def handle_endtag(self,tag):
+                  if tag=="td":
+                      self.row.append(self.text); self.text=None
+                  if tag=="tr": self.rows.append(self.row)
+          root=Path("package")
+          parser=Rows();parser.feed((root/"review.html").read_text())
+          print("REVIEW_ROWS",json.dumps(parser.rows))
+          video=root/"final-video.mp4"
+          result=subprocess.run(["ffmpeg","-hide_banner","-i",str(video),"-vf","scale=320:-2,blackdetect=d=0.4:pix_th=0.08","-an","-f","null","-"],capture_output=True,text=True,timeout=180)
+          intervals=[(float(a),float(b)) for a,b in re.findall(r"black_start:([\\d.]+) black_end:([\\d.]+)",result.stderr)]
+          print("BLACK_INTERVALS",json.dumps(intervals))
+          summary=json.loads((root/"quality-summary.json").read_text())
+          print("CHAPTERS",json.dumps(summary["chapters"]))
+          shotlist=[]
+          for a,b in intervals[:8]:
+              for label,t in (("before",max(0,a-.5)),("inside",(a+b)/2),("after",b+.5)):
+                  data=subprocess.run(["ffmpeg","-v","error","-ss",str(t),"-i",str(video),"-frames:v","1","-vf","scale=400:-2","-f","image2pipe","-vcodec","mjpeg","-"],capture_output=True,timeout=30).stdout
+                  if data:
+                      image=Image.open(io.BytesIO(data)).convert("RGB")
+                      shotlist.append((t,label,image.copy()))
+          if shotlist:
+              sheet=Image.new("RGB",(1200,250*((len(shotlist)+2)//3)),"#151515")
+              draw=ImageDraw.Draw(sheet)
+              for i,(t,label,image) in enumerate(shotlist):
+                  x=i%3*400;y=i//3*250
+                  sheet.paste(image,(x,y+20))
+                  draw.text((x+4,y+3),f"{t:.3f}s {label}",fill="white")
+              buf=io.BytesIO();sheet.save(buf,"JPEG",quality=85)
+              print("BLACK_CONTEXT_IMAGE_BEGIN")
+              print(base64.b64encode(buf.getvalue()).decode())
+              print("BLACK_CONTEXT_IMAGE_END")
+          PY
