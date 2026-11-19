@@ -130,7 +130,7 @@ def source_detail(path: Path) -> dict | None:
                 raise ValueError("No readable video dimensions")
             _SOURCE_DETAILS[token] = {"file": path.name, "width": width, "height": height,
                                      "detail_height": min(height, width * 9 / 16)}
-        except (PipelineError, OSError, ValueError, TypeError, StopIteration):
+        except (PipelineError, OSError, ValueError, TypeError, AttributeError, StopIteration):
             _SOURCE_DETAILS[token] = None
     result = _SOURCE_DETAILS[token]
     return dict(result) if result else None

@@ -142,41 +142,177 @@ def _valid_cached(path: Path) -> bool:
         return False
 
 
+_LOW_QUALITY_REFRESHES: set[tuple[str, str, str]] = set()
+
+
+def _cached_record(path: Path) -> dict:
+    try:
+        value = json.loads(path.with_suffix(".json").read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _record_quality_attempt(path: Path, status: str) -> None:
+    record = _cached_record(path)
+    if not record:
+        return
+    run_id = os.getenv("GITHUB_RUN_ID", "").strip()
+    if run_id:
+        record["quality_refresh_run"] = run_id
+        record["quality_refresh_attempt"] = os.getenv("GITHUB_RUN_ATTEMPT", "1").strip() or "1"
+    record["quality_refresh_status"] = status
+    try:
+        save_json(path.with_suffix(".json"), record)
+    except OSError:
+        pass
+
+
+def _invalidate_source_analyses(path: Path) -> None:
+    """New canonical bytes need new cuts, dialogue and vision—not stale sidecars."""
+    protected = {path, path.with_suffix(".json")}
+    for derived in path.parent.glob(path.stem + ".*"):
+        if derived not in protected and derived.is_file():
+            try:
+                derived.unlink(missing_ok=True)
+            except OSError:
+                # Fingerprinted analysis caches also reject these stale bytes.
+                pass
+
+
+def _install_candidate(attempt: Path, path: Path, metadata: dict) -> None:
+    """Install a complete media/metadata pair with rollback of an earlier copy."""
+    candidate_record = attempt.with_suffix(".json")
+    save_json(candidate_record, metadata)
+    previous = path.with_name(path.stem + ".quality-previous.mp4")
+    previous_record = previous.with_suffix(".json")
+    _clean_candidate(previous)
+    had_media, had_record = path.exists(), path.with_suffix(".json").exists()
+    media_backed = record_backed = new_media = new_record = False
+    try:
+        if had_media:
+            path.replace(previous)
+            media_backed = True
+        if had_record:
+            path.with_suffix(".json").replace(previous_record)
+            record_backed = True
+        attempt.replace(path)
+        new_media = True
+        candidate_record.replace(path.with_suffix(".json"))
+        new_record = True
+    except OSError:
+        # Never remove an untouched incumbent when an earlier rename failed.
+        if new_media:
+            path.unlink(missing_ok=True)
+        if new_record:
+            path.with_suffix(".json").unlink(missing_ok=True)
+        if media_backed:
+            previous.replace(path)
+        if record_backed:
+            previous_record.replace(path.with_suffix(".json"))
+        raise
+    else:
+        try:
+            _clean_candidate(previous)
+        except OSError:
+            pass
+        _invalidate_source_analyses(path)
+
+
 def download(film: dict, root: Path) -> Path:
     import yt_dlp
     root.mkdir(parents=True, exist_ok=True)
     height = export_size()[1]
     path = root / f"{film['kind']}-{film['id']}-{height}p.mp4"
-    stills_cached = False
-    if _valid_cached(path):
+    cached = _valid_cached(path)
+    incumbent = _cached_record(path) if cached else {}
+    stills_cached = bool(incumbent.get("stills_fallback"))
+    cached_quality = effective_height(incumbent.get("source_width"), incumbent.get("source_height"))
+    # Verify the bytes, not a stale sidecar's advertised resolution.
+    if cached and not stills_cached:
         try:
-            stills_cached = bool(json.loads(path.with_suffix(".json").read_text()).get("stills_fallback"))
-        except (OSError, ValueError):
-            stills_cached = False
-        if not stills_cached:
+            stream = next((item for item in probe(path).get("streams", [])
+                           if item.get("codec_type") == "video"), {})
+            actual_quality = effective_height(stream.get("width"), stream.get("height"))
+            if actual_quality:
+                cached_quality = actual_quality
+            else:
+                cached_quality = 0
+        except (PipelineError, OSError, ValueError, TypeError, AttributeError):
+            # A failed optional quality probe does not destroy a readable incumbent.
+            cached_quality = 0
+    run_id = os.getenv("GITHUB_RUN_ID", "").strip()
+    run_attempt = os.getenv("GITHUB_RUN_ATTEMPT", "1").strip() or "1"
+    refresh_key = (str(path.resolve()), run_id, run_attempt)
+    if cached:
+        if not stills_cached and cached_quality >= min(1080, height):
             return path
-        # A warm-up job had to use stills; try the real trailer once more before keeping them.
-    require_disk(root)
-    base = {"quiet": True, "no_warnings": True, "noplaylist": True, "socket_timeout": 30, "retries": 3, "fragment_retries": 3, "js_runtimes": {"node": {}}}
-    tried = []
+        if (refresh_key in _LOW_QUALITY_REFRESHES
+                or run_id and incumbent.get("quality_refresh_run") == run_id
+                and incumbent.get("quality_refresh_attempt", "1") == run_attempt):
+            return path
+        _LOW_QUALITY_REFRESHES.add(refresh_key)
+        # Persist the attempt marker before network work, so a warm-up's limited
+        # result is not downloaded again by the producer in the same Actions run.
+        _record_quality_attempt(path, "attempting_hd_refresh")
+    try:
+        require_disk(root)
+    except PipelineError:
+        if cached:
+            _record_quality_attempt(path, "retained_disk_reserve")
+            return path
+        raise
+    target = path.with_name(path.stem + ".quality-refresh.mp4") if cached else path
+    if cached:
+        _clean_candidate(target)
+    base = {"quiet": True, "no_warnings": True, "noplaylist": True, "socket_timeout": 30,
+            "retries": 3, "fragment_retries": 3, "js_runtimes": {"node": {}}}
+    state = {"attempts": 0, "best_quality": 0.0, "winning_route": None}
     last_error: Exception | None = None
     for route in download_access.routes():
+        if state["attempts"] >= MAX_QUALITY_DOWNLOADS:
+            break
+        state["route"] = route
         try:
-            result = _download_route(film, root, path, height, download_access.options(base, route), yt_dlp)
+            _download_route(film, root, target, height, download_access.options(base, route), yt_dlp,
+                            state=state)
         except _RouteBlocked:
-            tried.append(route)
             if route == "direct" and download_access.fallback_proxy():
                 print(f"YouTube bot check on the direct route for {film['title']}; retrying through the fallback route.", flush=True)
             continue
         except PipelineError as exc:
-            # No usable copy on this route (for example every candidate errored); try the next route.
             last_error = exc
-            tried.append(route)
             continue
-        download_access.record_route_success(route)
-        return result
+        # A readable SD copy does not end route discovery while the same shared,
+        # bounded three-download allowance can still find an actual HD copy.
+        if state["best_quality"] >= min(1080, height):
+            break
+    selected = target.exists() and state["best_quality"] > 0
+    if selected and state.get("winning_route"):
+        download_access.record_route_success(state["winning_route"])
+    if cached:
+        try:
+            if selected and (stills_cached or state["best_quality"] > cached_quality + 1):
+                metadata = _cached_record(target)
+                _install_candidate(target, path, metadata)
+                _record_quality_attempt(path, "upgraded")
+                print(f"Upgraded cached footage for {film['title']} from {cached_quality:.0f}p to {state['best_quality']:.0f}p.", flush=True)
+            else:
+                _record_quality_attempt(path, "retained_no_better_source")
+        except (OSError, PipelineError, ValueError):
+            if not _valid_cached(path):
+                raise
+            _record_quality_attempt(path, "retained_upgrade_install_failed")
+            print(f"Optional HD refresh could not be installed for {film['title']}; retaining its verified source.", flush=True)
+        finally:
+            _clean_candidate(target)
+        return path
+    if selected:
+        if state["best_quality"] < min(1080, height):
+            _LOW_QUALITY_REFRESHES.add(refresh_key)
+            _record_quality_attempt(path, "limited_source_available")
+        return path
     return _stills_or_raise(film, root, path, stills_cached, last_error or _blocked())
-
 
 def _stills_or_raise(film: dict, root: Path, path: Path, stills_cached: bool, error: Exception) -> Path:
     """When no trailer can be downloaded, use the film's TMDB images instead of stopping the video."""
@@ -196,7 +332,8 @@ def _stills_or_raise(film: dict, root: Path, path: Path, stills_cached: bool, er
     return built
 
 
-def _download_route(film: dict, root: Path, path: Path, height: int, common: dict, yt_dlp) -> Path:
+def _download_route(film: dict, root: Path, path: Path, height: int, common: dict, yt_dlp, *, state: dict | None = None) -> Path:
+    state = state if state is not None else {"attempts": 0, "best_quality": 0.0, "winning_route": None}
     candidates = []
     for trailer in film["trailers"][:MAX_CANDIDATES]:
         url = trailer_url(trailer)
@@ -244,12 +381,12 @@ def _download_route(film: dict, root: Path, path: Path, height: int, common: dic
     if blocked and not ranked:
         raise _RouteBlocked()
     ranked.sort(key=lambda row: (-row[0], row[1]))
-    best_quality = 0
-    quality_downloads = 0
-    selected = False
+    best_quality = state["best_quality"]
+    selected = path.exists() and best_quality > 0
     for advertised, order, url, curated, info in ranked:
-        if selected and (best_quality >= height or (advertised and advertised <= best_quality)
-                         or quality_downloads >= MAX_QUALITY_DOWNLOADS):
+        if state["attempts"] >= MAX_QUALITY_DOWNLOADS:
+            break
+        if selected and (best_quality >= height or (advertised and advertised <= best_quality)):
             continue
         if blocked and _is_youtube(url):
             continue
@@ -261,6 +398,8 @@ def _download_route(film: dict, root: Path, path: Path, height: int, common: dic
                        "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
                        "outtmpl": str(attempt.with_suffix(".%(ext)s")), "overwrites": True,
                        "max_filesize": MAX_TRAILER_BYTES}
+            require_disk(root)
+            state["attempts"] += 1
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([url])
             if not attempt.exists() or not 25 <= duration(attempt) <= 360:
@@ -272,14 +411,15 @@ def _download_route(film: dict, root: Path, path: Path, height: int, common: dic
             actual = effective_height(video.get("width"), video.get("height"))
             if not actual:
                 raise PipelineError("Downloaded trailer has no valid video dimensions.")
-            quality_downloads += 1
             if actual > best_quality:
-                attempt.replace(path)
-                best_quality = actual
-                selected = True
-                save_json(path.with_suffix(".json"), {"source": url, "title": info.get("title"), "channel": info.get("channel"),
+                _install_candidate(attempt, path, {"source": url, "title": info.get("title"), "channel": info.get("channel"),
                           "curated": curated, "requested_height": height, "source_width": video.get("width"),
-                          "source_height": video.get("height"), "quality_selection_version": 2})
+                          "source_height": video.get("height"), "quality_selection_version": 2,
+                          "film_kind": film.get("kind"), "film_id": film.get("id"),
+                          "download_route": state.get("route")})
+                best_quality = state["best_quality"] = actual
+                state["winning_route"] = state.get("route")
+                selected = True
         except (yt_dlp.utils.DownloadError, PipelineError, OSError, ValueError) as exc:
             errors.append(type(exc).__name__)
             if _bot_check(exc):
