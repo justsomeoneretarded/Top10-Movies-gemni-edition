@@ -39,6 +39,7 @@ _CHALLENGE = re.compile(
     r"verify (?:that )?you are human|unusual traffic|solve (?:the|this) challenge|"
     r"please complete the captcha|access to this page has been denied", re.I)
 _LOCAL = threading.local()
+_FACE_LOCK = threading.Lock()
 
 
 def public_url(url: str) -> bool:
@@ -365,7 +366,9 @@ def gather_photos(films: list[dict], work: Path) -> tuple[list, list[dict]]:
             if any(_duplicates(image, old.image, value, old.notes["hash"]) for old in accepted):
                 _count("duplicate_image")
                 return
-            face, quality, good = face_quality(image)
+            # YuNet has mutable input size; downloads stay parallel, face inference does not.
+            with _FACE_LOCK:
+                face, quality, good = face_quality(image)
             candidate = Candidate(image, index, source, face=face, score=quality)
             candidate.notes = {"good_face": good, "face_quality": quality, "hash": value, **notes}
             accepted.append(candidate)
