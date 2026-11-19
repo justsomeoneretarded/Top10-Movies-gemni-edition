@@ -954,7 +954,7 @@ def _alternative_design(pool: list[Candidate], used: list[Candidate],
     _, canvas, chosen, metrics, crop = best
     return canvas, chosen, {"status": "selected", "attempts": attempts,
                            "failed_variants": failures, "metrics": metrics,
-                           "crop": crop, "improved_over_first": best[0] > (initial_score or best[0]) + .001,
+                           "crop": crop, "improved_over_first": initial_score is not None and best[0] > initial_score + .001,
                            "basis": "bounded local readability and diversity; not a CTR prediction"}
 
 

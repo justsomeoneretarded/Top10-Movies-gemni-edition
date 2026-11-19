@@ -21,6 +21,7 @@ import time
 
 import requests
 from PIL import Image
+import cv2
 
 from .editorial_policy import image_queries
 from .core import normalized, save_json
@@ -386,7 +387,7 @@ def gather_photos(films: list[dict], work: Path) -> tuple[list, list[dict]]:
                         "source_kind": "web-image"})
                 if len(accepted) >= MAX_PHOTOS:
                     break
-        except (OSError, ValueError, KeyError, TypeError, requests.RequestException) as exc:
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, cv2.error, requests.RequestException) as exc:
             _count("discovery_" + type(exc).__name__)
 
         # Supplement a sparse web pool, not only an entirely empty one. These
@@ -404,7 +405,7 @@ def gather_photos(films: list[dict], work: Path) -> tuple[list, list[dict]]:
                         "fallback_reason": ("No usable independently searched photo" if not report["accepted_web"]
                                             else "Supplemented a sparse verified web-photo pool"),
                         "identity_evidence": "TMDB image attached to this exact title ID"})
-            except (OSError, ValueError, requests.RequestException) as exc:
+            except (OSError, ValueError, TypeError, RuntimeError, cv2.error, requests.RequestException) as exc:
                 _count("publicity_" + type(exc).__name__)
         report["status"] = ("web_and_publicity" if report["accepted_web"] and report["accepted_publicity"]
                             else "web" if report["accepted_web"] else
