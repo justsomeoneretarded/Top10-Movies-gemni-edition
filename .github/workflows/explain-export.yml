@@ -17,12 +17,14 @@ jobs:
       - name: Inspect existing review and dark intervals only
         shell: bash
         run: |
-          python -m pip install --quiet Pillow
+          python -m pip install --quiet Pillow imageio-ffmpeg
           python - <<'PY'
           import base64,io,json,re,subprocess
           from pathlib import Path
           from html.parser import HTMLParser
           from PIL import Image,ImageDraw
+          from imageio_ffmpeg import get_ffmpeg_exe
+          ffmpeg=get_ffmpeg_exe()
           class Rows(HTMLParser):
               def __init__(self):
                   super().__init__(); self.rows=[]; self.row=[]; self.text=None
@@ -39,15 +41,20 @@ jobs:
           parser=Rows();parser.feed((root/"review.html").read_text())
           print("REVIEW_ROWS",json.dumps(parser.rows))
           video=root/"final-video.mp4"
-          result=subprocess.run(["ffmpeg","-hide_banner","-i",str(video),"-vf","scale=320:-2,blackdetect=d=0.4:pix_th=0.08","-an","-f","null","-"],capture_output=True,text=True,timeout=180)
-          intervals=[(float(a),float(b)) for a,b in re.findall(r"black_start:([\\d.]+) black_end:([\\d.]+)",result.stderr)]
+          result=subprocess.run([ffmpeg,"-hide_banner","-i",str(video),"-vf","scale=320:-2,blackdetect=d=0.4:pix_th=0.08","-an","-f","null","-"],capture_output=True,text=True,timeout=180)
+          intervals=[]
+          for line in result.stderr.splitlines():
+              if "black_start:" in line and "black_end:" in line:
+                  a=float(line.split("black_start:")[1].split()[0])
+                  b=float(line.split("black_end:")[1].split()[0])
+                  intervals.append((a,b))
           print("BLACK_INTERVALS",json.dumps(intervals))
           summary=json.loads((root/"quality-summary.json").read_text())
           print("CHAPTERS",json.dumps(summary["chapters"]))
           shotlist=[]
           for a,b in intervals[:8]:
               for label,t in (("before",max(0,a-.5)),("inside",(a+b)/2),("after",b+.5)):
-                  data=subprocess.run(["ffmpeg","-v","error","-ss",str(t),"-i",str(video),"-frames:v","1","-vf","scale=400:-2","-f","image2pipe","-vcodec","mjpeg","-"],capture_output=True,timeout=30).stdout
+                  data=subprocess.run([ffmpeg,"-v","error","-ss",str(t),"-i",str(video),"-frames:v","1","-vf","scale=400:-2","-f","image2pipe","-vcodec","mjpeg","-"],capture_output=True,timeout=30).stdout
                   if data:
                       image=Image.open(io.BytesIO(data)).convert("RGB")
                       shotlist.append((t,label,image.copy()))
