@@ -101,7 +101,7 @@ def _card(selector, source: Path, index: int) -> bool:
         return False
 
 
-def _best_preview(selector, sources, shot_lookup, text, seconds, action, dialogue):
+def _best_preview(selector, sources, shot_lookup, text, seconds, action, dialogue, *, hold_short=False):
     if not sources:
         raise PipelineError("No footage source is available for a preview.")
     query = (("A gripping action highlight: a fight, chase, stunt or explosion. " if action else
@@ -144,7 +144,7 @@ def _best_preview(selector, sources, shot_lookup, text, seconds, action, dialogu
                 starts += [first - .14 for first, last in speech
                            if start <= first-.14 <= end-seconds and last+.14 <= first-.14+seconds]
             for candidate_start in dict.fromkeys(starts):
-                still = any(candidate_start < stop and candidate_start+seconds > beginning for beginning,stop in blocked)
+                still = (hold_short and not full_window) or any(candidate_start < stop and candidate_start+seconds > beginning for beginning,stop in blocked)
                 if still:
                     # A continuous short-shot fallback must never run through a
                     # detected title/logo. Hold one clean scene frame instead.
@@ -180,8 +180,24 @@ def _best_preview(selector, sources, shot_lookup, text, seconds, action, dialogu
     if not candidates:
         # Analysis may be incomplete even though the source itself is usable.
         # A quiet continuous opening remains preferable to aborting production.
-        return 0.0, {"source": str(sources[0]), "start": 0.0,
-                     "duration": seconds, "muted": True}
+        result={"source":str(sources[0]),"start":0.0,"duration":seconds,"muted":True}
+        if hold_short:
+            # Missing analysis never licenses playback across unknown cuts.
+            # Try a few actual frames and hold one useful source image.
+            try:
+                length=duration(Path(sources[0]))
+                for fraction in (.18,.38,.58):
+                    point=max(0,min(length-.1,length*fraction))
+                    picture=get_frame(Path(sources[0]),point).convert("L").resize((160,90))
+                    histogram=picture.histogram()
+                    count=sum(histogram)
+                    if count and sum(histogram[:25])/count<.9 and sum(histogram[100:])/count>.02:
+                        result["start"]=point
+                        break
+            except (PipelineError,OSError,RuntimeError,TypeError,ValueError):
+                pass
+            result["still"]=True
+        return 0.0,result
     tier,full,score,_source,_start,result = max(candidates,key=lambda value:value[:5])
     return score + (.5 if full else 0) + tier*4, result
 
@@ -194,7 +210,7 @@ def choose_preview(selector, sources: list[Path], shot_lookup: dict[str, list], 
     malformed transcripts and untranscribed extra trailers are muted; the final
     music bed fills those intervals without beginning halfway through dialogue.
     """
-    result = _best_preview(selector,sources,shot_lookup,text,_seconds(seconds),action,dialogue)[1]
+    result = _best_preview(selector,sources,shot_lookup,text,_seconds(seconds),action,dialogue,hold_short=True)[1]
     _reserve(selector,result["source"],result["start"],1/FPS if result.get("still") else result["duration"],"review-preview")
     return result
 
@@ -277,7 +293,7 @@ def cold_open_plan(selector, pools: list[list[Path]], shot_lookup: dict[str, lis
     choices = []
     for film_index, pool in enumerate(pools):
         if pool:
-            score, shot = _best_preview(selector, pool, shot_lookup, text, first_frames/FPS, action, dialogue)
+            score, shot = _best_preview(selector, pool, shot_lookup, text, first_frames/FPS, action, dialogue,hold_short=True)
             choices.append((score, -film_index, film_index, shot))
     choices.sort(key=lambda value: value[:2], reverse=True)
     result = []

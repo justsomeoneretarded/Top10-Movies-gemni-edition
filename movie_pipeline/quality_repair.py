@@ -60,7 +60,7 @@ def _video_info(path):
 def _black_intervals(path, timeout):
     # Return only decoder-confirmed, almost entirely black image runs.
     result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-nostdin", "-i", str(path), "-vf",
+        ["ffmpeg", "-hide_banner", "-nostdin", "-threads", "2", "-filter_threads", "1", "-i", str(path), "-vf",
          "scale=320:-2,blackdetect=d=0.4:pix_th=0.08", "-an", "-f", "null", "-"],
         capture_output=True, text=True, timeout=max(1, timeout), check=False)
     if result.returncode:
@@ -124,7 +124,7 @@ def _classify(path, start, end, bounds, event):
 
 def _audio_digest(path):
     result = subprocess.run(
-        ["ffmpeg", "-v", "error", "-xerror", "-err_detect", "explode", "-i", str(path),
+        ["ffmpeg", "-v", "error", "-threads", "2", "-filter_threads", "1", "-xerror", "-err_detect", "explode", "-i", str(path),
          "-map", "0:a:0", "-vn", "-f", "hash", "-hash", "sha256", "-"],
         capture_output=True, text=True, timeout=90, check=False)
     if result.returncode or not re.search(r"SHA256=[0-9a-f]{64}", result.stdout):
