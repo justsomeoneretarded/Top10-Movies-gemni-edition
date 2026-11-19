@@ -1033,8 +1033,11 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                               muted=preview["muted"], still=bool(preview.get("still", False)),
                               still_motion="zoom_in" if preview.get("still") else None, **edges)
             except (PipelineError, OSError, RuntimeError, ValueError):
-                if source == trailer:
+                from .production_quality import fallback_pool_inputs
+                if not fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup,
+                                            original_primary_paths, {str(source)}):
                     raise
+                trailer = trailers[film_index]
                 preview = choose_preview(selector, [trailer], shot_lookup, title+". "+brief,
                                          REVIEW_PREVIEW_SECONDS, section_action, dialogue=dialogue)
                 source = Path(preview["source"])
@@ -1057,9 +1060,12 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                 speech_video(source, audio, [reveal_shot], path, label,
                              work / f"render-{len(parts):03}", label_seconds=duration(audio))
             except (PipelineError, OSError, RuntimeError, ValueError):
-                if source == trailer:
+                from .production_quality import fallback_pool_inputs
+                if not fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup,
+                                            original_primary_paths, {str(source)}):
                     raise
-                print("Optional reveal still unavailable; keeping the announcement over primary footage.", flush=True)
+                trailer = trailers[film_index]
+                print("Reveal still unavailable; keeping the complete announcement over an alternate verified source.", flush=True)
                 reveal_shot = {**reveal_shot, "source": str(trailer),
                                "start": min(preview["start"], max(0, duration(trailer)-1))}
                 speech_video(trailer, audio, [reveal_shot], path, label,
@@ -1141,14 +1147,14 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                 try:
                     speech_video(trailer, audio, chosen, path, None, work / f"render-{len(parts):03}")
                 except (PipelineError, OSError, RuntimeError, ValueError):
-                    optional = {str(extra) for pool in pools for extra in pool[1:]}
-                    failed = {cut.get("source") for cut in chosen if cut.get("source") in optional}
-                    if not failed:
+                    failed = {str(cut.get("source", trailer)) for cut in chosen if not cut.get("image")}
+                    from .production_quality import fallback_pool_inputs
+                    if not fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup,
+                                                original_primary_paths, failed):
                         raise
-                    print("Optional trailer could not render; retrying this paragraph with primary footage.", flush=True)
-                    chosen = primary_fallback_plan(selector, chosen, trailers, shot_sets, text, action, film_index)
-                    for pool in pools:
-                        pool[:] = [source for source in pool if str(source) not in failed]
+                    trailer = trailers[film_index]
+                    print("Footage could not render; retrying this paragraph once with a verified same-title source.", flush=True)
+                    chosen = primary_fallback_plan(selector, chosen, trailers, shot_sets, text, section_action, film_index)
                     speech_video(trailer, audio, chosen, path, None, work / f"render-{len(parts):03}")
             if section["kind"] == "subscribe":
                 no_tail_parts.add(str(path))
@@ -1315,6 +1321,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     smooth_joins(parts, tails, no_tail_parts)
     final_duration, speed = finish(parts, output / "final-video.mp4", work, action, spec=spec, music_theme=music_theme,
                                    timeline=timeline, top_title=films[0]["title"], overlays=overlays)
+    visual_repairs["export_speed"] = speed
     export_visual = inspect_visual_export(output / "final-video.mp4", timeline, visual_repairs)
     visual_repairs["finished_export"] = export_visual
     if export_visual.get("repairable_parts"):
@@ -1324,6 +1331,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             final_duration, speed = finish(parts, output / "final-video.mp4", work, action,
                 spec=spec, music_theme=music_theme, timeline=timeline,
                 top_title=films[0]["title"], overlays=overlays)
+            visual_repairs["export_speed"] = speed
             visual_repairs["finished_export"] = inspect_visual_export(
                 output / "final-video.mp4", timeline, visual_repairs)
     save_json(work / "visual-repair-report.json", visual_repairs)
@@ -1523,7 +1531,11 @@ def warm(stage: str, part: str, title: str, brief: str, movies: str, work: Path,
         film = films[int(part)]
         trailer = download(film, Path("work/footage"))
         shots = analyse(trailer, trailer.with_suffix(".shots.json"))
-        scenes.describe_trailer(trailer, shots)
+        from .gemini import enabled as cloud_enabled
+        if cloud_enabled():
+            print("Cloud scene advice deferred until the accepted pool is selected.", flush=True)
+        else:
+            scenes.describe_trailer(trailer, shots)
         # Extra trailers are fetched in global rounds by the final job, after
         # every title's primary has been fetched. Parallel warm-ups stay primary-only.
         extra = None

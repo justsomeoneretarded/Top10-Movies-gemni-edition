@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 import math
 from pathlib import Path
-from .core import save_json
+from .core import PipelineError, save_json
 
 
 def _section_identity(script):
@@ -39,6 +39,14 @@ def repair_measured_depth(writer, title, brief, films, script, spec, estimated_s
         if _section_identity(candidate) != _section_identity(script) or _section_identity(candidate) is None:
             receipt.update(status="retained", reason="repair_changed_section_identity")
             return script, False, receipt
+        for old, new in zip(script["sections"], candidate["sections"]):
+            if old.get("kind") != "film" and old["paragraphs"] != new["paragraphs"]:
+                receipt.update(status="retained", reason="repair_changed_non_review_speech")
+                return script, False, receipt
+            if (old.get("kind") == "film" and old["paragraphs"][0].startswith("Number ")
+                    and old["paragraphs"][0] != new["paragraphs"][0]):
+                receipt.update(status="retained", reason="repair_changed_rank_announcement")
+                return script, False, receipt
         before = [section["paragraphs"] for section in script["sections"]]
         after = [section["paragraphs"] for section in candidate["sections"]]
         changed = before != after
@@ -70,3 +78,33 @@ def write_quality_receipts(work: Path, output: Path, script: dict, *, measured_r
         save_json(output / name, data)
     paragraphs = [p for section in script.get("sections", []) for p in section.get("paragraphs", [])]
     (output / "final-script.txt").write_text("\n\n".join(paragraphs) + "\n", encoding="utf-8")
+
+
+def fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup, original_primary_paths, failed_sources):
+    """One bounded render fallback, retaining title identity and original speech.
+
+    A multi-source FFmpeg error does not identify every bad input. Prefer the
+    already accepted original primary when optional inputs are implicated, and
+    never move a source from another film into this film's pool.
+    """
+    failed = {str(path) for path in failed_sources}
+    originals = {str(path) for path in original_primary_paths}
+    implicated_extras = failed - originals
+    excluded = implicated_extras or failed
+    changes = []
+    for index, pool in enumerate(pools):
+        if not any(str(path) in failed for path in pool):
+            continue
+        remaining = [path for path in pool if str(path) not in excluded]
+        if not remaining:
+            raise PipelineError("No alternate verified source remains for the affected title.")
+        original = original_primary_paths[index]
+        chosen = original if original in remaining else remaining[0]
+        if str(chosen) not in shot_lookup:
+            raise PipelineError("Alternate source has no matching local shot analysis.")
+        changes.append((index, chosen, [chosen, *[p for p in remaining if p != chosen]]))
+    for index, chosen, remaining in changes:
+        pools[index][:] = remaining
+        trailers[index] = chosen
+        shot_sets[index] = shot_lookup[str(chosen)]
+    return bool(changes)
