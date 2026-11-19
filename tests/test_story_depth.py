@@ -327,3 +327,16 @@ def test_repair_without_standalone_announcement_cannot_lose_film_identity():
     assert result["sections"] == original["sections"]
     record = next(r for r in result["package"]["depth_review"]["reviews"] if r["film"] == 0)
     assert record["action"] == "retained_invalid_repair"
+
+
+def test_optional_cache_write_failure_does_not_undo_a_supported_repair(tmp_path, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise OSError("cache unavailable")
+    monkeypatch.setattr("movie_pipeline.story_depth.save_json", unavailable)
+    writer = writer_with(assessment(), improvement(), cache_dir=tmp_path)
+    result = repair(writer)
+    assert result["sections"][2]["paragraphs"] == BETTER
+    receipt = result["package"]["depth_review"]
+    assert receipt["status"] == "completed"
+    assert receipt["changed_film_indices"] == [0]
+    assert receipt["cache"] == "write_unavailable"

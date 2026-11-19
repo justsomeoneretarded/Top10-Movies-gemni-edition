@@ -280,7 +280,12 @@ def repair_depth(writer, title, brief, films, script, *, target_seconds,
         receipt["repair_attempts"] = attempted
         receipt["checked_reviews"] = len(reviews)
         if cache:
-            save_json(cache, {"sections": result["sections"], "receipt": receipt})
-    except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError, RuntimeError, OSError) as exc:
+            try:
+                save_json(cache, {"sections": result["sections"], "receipt": receipt})
+            except OSError:
+                # A failed optional cache write does not undo a checked improvement.
+                receipt["cache"] = "write_unavailable"
+    except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError,
+            RuntimeError, OSError, OverflowError) as exc:
         receipt.update(status="unavailable", error_class=type(exc).__name__)
     return result
