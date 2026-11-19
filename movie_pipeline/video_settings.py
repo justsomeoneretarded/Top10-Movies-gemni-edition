@@ -1,6 +1,8 @@
 """Export resolution and conservative scratch-space checks, independent of thumbnails."""
 from __future__ import annotations
 
+import json
+import math
 import os
 import re
 import shutil
@@ -100,3 +102,123 @@ def require_disk(path: Path, seconds: float = 0):
     free = shutil.disk_usage(path).free
     if free < needed:
         raise PipelineError(f"Not enough working disk for {height}p: {free/1e9:.1f} GB free, about {needed/1e9:.1f} GB reserved. Uncheck Try 4K or use fewer titles; artifact expiry does not free running-job disk.")
+
+
+# Actual media dimensions are cached only while the underlying file is unchanged.
+# Never infer usable detail from a "2160p" filename or requested download ceiling.
+_SOURCE_DETAILS: dict[tuple, dict | None] = {}
+
+
+def source_detail(path: Path) -> dict | None:
+    path = Path(path)
+    try:
+        stat = path.stat()
+        if not path.is_file() or stat.st_size <= 0:
+            return None
+        token = (str(path.resolve()), stat.st_dev, stat.st_ino, stat.st_size,
+                 stat.st_mtime_ns, stat.st_ctime_ns)
+    except OSError:
+        return None
+    if token not in _SOURCE_DETAILS:
+        try:
+            video = next((stream for stream in probe(path).get("streams", [])
+                          if stream.get("codec_type") == "video"), {})
+            width, height = video.get("width"), video.get("height")
+            if (isinstance(width, bool) or isinstance(height, bool)
+                    or not isinstance(width, int) or not isinstance(height, int)
+                    or width <= 0 or height <= 0):
+                raise ValueError("No readable video dimensions")
+            _SOURCE_DETAILS[token] = {"file": path.name, "width": width, "height": height,
+                                     "detail_height": min(height, width * 9 / 16)}
+        except (PipelineError, OSError, ValueError, TypeError, StopIteration):
+            _SOURCE_DETAILS[token] = None
+    result = _SOURCE_DETAILS[token]
+    return dict(result) if result else None
+
+
+def discovery_size(primary: Path, ceiling: int) -> tuple[int, int]:
+    """A discovery floor, not a promise about the final export.
+
+    A 360p incumbent must permit a verified 720p or 1080p upgrade. Already-good
+    primaries need no SD extras, while 4K discovery still admits useful HD clips.
+    """
+    details = source_detail(primary)
+    if details is None:
+        try:
+            record = json.loads(Path(primary).with_suffix(".json").read_text())
+            width, height = record.get("source_width"), record.get("source_height")
+            if (not isinstance(width, (int, float)) or isinstance(width, bool)
+                    or not isinstance(height, (int, float)) or isinstance(height, bool)
+                    or not math.isfinite(width) or not math.isfinite(height)
+                    or min(width, height) <= 0):
+                raise ValueError
+            grade = min(height, width * 9 / 16)
+        except (OSError, ValueError, TypeError, AttributeError):
+            # Missing optional advice must not make discovery stricter than SD.
+            grade = 360
+    else:
+        grade = details["detail_height"]
+    cap = min(1080, ceiling, grade)
+    eligible = [height for height in SIZES if height <= cap]
+    if eligible:
+        return SIZES[max(eligible)]
+    scale = max(2, int(cap)) / 9
+    return max(2, int(scale * 16)//2*2), max(2, int(scale * 9)//2*2)
+
+
+def _representatives(pools) -> list[dict]:
+    from .source_pool import promote_source_pool
+    result = []
+    for pool in pools:
+        ordered = promote_source_pool(pool)
+        details = next((row for path in ordered if (row := source_detail(path))), None)
+        if details:
+            result.append(details)
+    return result
+
+
+def choose_export_from_pools(pools, ceiling: int) -> tuple[int, int]:
+    """Choose after all accepted rounds, using each title's best usable copy.
+
+    Native-majority and the existing modest-upscale rule are retained. The
+    former unconditional 1080p floor is removed for all-SD auto exports.
+    An explicit unchecked 4K box retains the requested 1080p canvas.
+    """
+    if ceiling <= 1080:
+        return SIZES[1080]
+    representatives = _representatives(pools)
+    if not representatives:
+        # Production's media validation remains authoritative; uncertain optional
+        # quality metadata is not a new reason to reject an otherwise usable job.
+        return SIZES[1080]
+    chosen = _shared_size(representatives, ceiling)
+    native_hd = sum(row["width"] >= 1920 and row["height"] >= 1080
+                    for row in representatives)
+    if chosen[1] < 1080 and native_hd / len(representatives) >= MAJORITY:
+        # Do not lower four good HD titles because the fifth has no HD source.
+        # Report that minority's upscale explicitly instead.
+        return SIZES[1080]
+    return chosen
+
+
+def source_quality_report(pools, size: tuple[int, int]) -> dict:
+    """Describe accepted inputs honestly; this does not claim every input is used."""
+    width, height = size
+    rows = []
+    unknown = []
+    for film_index, pool in enumerate(pools):
+        for position, path in enumerate(pool):
+            details = source_detail(path)
+            if details is None:
+                unknown.append({"film_index": film_index, "file": Path(path).name})
+                continue
+            factor = max(width / details["width"], height / details["height"])
+            rows.append({**details, "film_index": film_index,
+                         "role": "primary" if position == 0 else "extra",
+                         "upscale_factor": round(max(1.0, factor), 4),
+                         "below_canvas": factor > 1.001})
+    return {"basis": "accepted_pool", "export_width": width, "export_height": height,
+            "sources": rows, "unknown_sources": unknown,
+            "primary_sources_below_canvas": [row["file"] for row in rows
+                                             if row["role"] == "primary" and row["below_canvas"]],
+            "accepted_sources_below_canvas": [row["file"] for row in rows if row["below_canvas"]]}
