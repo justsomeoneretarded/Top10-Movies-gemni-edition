@@ -30,6 +30,9 @@ from .timing import DurationSpec, final_tempo, trailer_budget, workflow_duration
 from .video_settings import (
     MAX_UPSCALE,
     choose_output_size,
+    choose_export_from_pools,
+    discovery_size,
+    source_quality_report,
     download_ceiling,
     export_size,
     inspect_sources,
@@ -228,7 +231,7 @@ def choose_beat(cues: list[dict], shots: list[dict], trailer_duration: float, ac
 
 def validate_package(output: Path, spec: DurationSpec | None = None):
     spec = spec or DurationSpec()
-    required = ["final-video.mp4", "subtitles.srt", "description.txt", "recommended-title.txt", *[f"thumbnail-{n:02}.jpg" for n in range(1, 4)]]
+    required = ["final-video.mp4", "subtitles.srt", "description.txt", "recommended-title.txt", *[f"thumbnail-{n:02}.jpg" for n in range(1, 11)]]
     if os.getenv("COMPARISON_EXPORT", "false").lower() == "true":
         required.append("final-video-augmented.mp4")
     for name in required:
@@ -239,7 +242,7 @@ def validate_package(output: Path, spec: DurationSpec | None = None):
     seconds = float(metadata["format"]["duration"])
     if not math.isfinite(seconds) or seconds <= 0:
         raise PipelineError("Final export has no valid media duration.")
-    if not spec.automatic and not spec.minimum-.5 <= seconds <= spec.maximum+.5:
+    if not spec.minimum-.5 <= seconds <= spec.maximum+.5:
         print(f"Complete video is {seconds/60:.1f} minutes; outside the soft target, retained without padding or cutting a review.", flush=True)
     streams = metadata["streams"]
     video = next((s for s in streams if s["codec_type"] == "video"), None)
@@ -321,7 +324,7 @@ def setup_run(title: str, brief: str, movies: str, work: Path, output: Path, sta
     reference = voice_reference(narrator, Path(os.getenv("VOICE_DIR", "assets/voices")))
     # Include the resolver policy and writing model so stale identities/scripts are not reused.
     script_model = os.getenv("SCRIPT_MODEL", "gemma4:12b")
-    run_key = key("pipeline-v22-gemini-writes-script", os.getenv("NARRATION_SPEED", "1.2"), title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
+    run_key = key("pipeline-v23-quality-repairs", os.getenv("NARRATION_SPEED", "1.2"), title, brief, movies, content_type, narrator, script_model, ai_configuration(), vars(spec), selected_tts_model(), key(reference.read_bytes().hex()))
     work = work / run_key
     work.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
@@ -392,6 +395,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         best_intro_sources,
         choose_from_sources,
         primary_fallback_plan,
+        promote_source_pool,
     )
     from .speech_recovery import SpeechRecovery, SpeechRecoveryError
     from .voice import Narrator, captions
@@ -413,18 +417,17 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         trailers.append(trailer)
         shot_sets.append(analyse(trailer, trailer.with_suffix(".shots.json")))
 
-    sources = inspect_sources(trailers)
+    original_primary_paths = list(trailers)
+    original_primaries = {str(path) for path in trailers}
+    initial_sources = inspect_sources(trailers)
+    sources = list(initial_sources)
+    # A provisional canvas guides discovery only; final size follows the full pool.
     width, height = choose_output_size(sources, ceiling)
-    os.environ["VIDEO_RESOLUTION"] = f"{width}x{height}"
     pools = [[trailer] for trailer in trailers]
     shot_lookup = {str(trailer): shots for trailer, shots in zip(trailers, shot_sets)}
     for i, source in enumerate(sources):
         source.update(film=films[i]["title"], role="primary")
     from . import gemini as _gemini, gemini_editing
-    if _gemini.enabled():
-        # Primary trailers get their scene maps first, before reviews of extra candidates spend the budget.
-        for trailer in trailers:
-            gemini_editing.analyse_source(trailer)
     from .resource_budget import DownloadBudget, seed_sources
     seed_sources(Path("work/footage"),trailers)
     download_budget = DownloadBudget()
@@ -441,8 +444,9 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                 with download_budget.claim(Path("work/footage")) as reserved:
                     if not reserved:
                         return None
-                    return (download_secondary(film, Path("work/footage"), primary, (width, height)) if round_number == 2 else
-                            download_secondary(film, Path("work/footage"), primary, (width, height),
+                    minimum_size = discovery_size(primary, ceiling)
+                    return (download_secondary(film, Path("work/footage"), primary, minimum_size) if round_number == 2 else
+                            download_secondary(film, Path("work/footage"), primary, minimum_size,
                                                existing=pools[i][1:], slot=round_number))
             except Exception as exc:  # noqa: BLE001 -- an optional extra must never discard a usable first trailer
                 print(f"Trailer {round_number} download skipped for {film['title']} ({type(exc).__name__}).", flush=True)
@@ -460,8 +464,6 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                     print(f"Keeping {len(pools[i])} trailer(s) for {film['title']}; optional trailer {round_number} was not accepted.", flush=True)
                     continue
                 details = inspect_sources([extra])[0]
-                if min(details["height"], details["width"]*9/16) * MAX_UPSCALE < height:
-                    raise PipelineError("Optional trailer is too far below the selected export resolution.")
                 extra_shots = analyse(extra, extra.with_suffix(".shots.json"))
                 require_disk(work, spec.target)
                 pools[i].append(extra)
@@ -475,10 +477,63 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                         if path.is_file():
                             path.unlink(missing_ok=True)
                 print(f"Trailer {round_number} skipped for {film['title']}; keeping the accepted trailers.", flush=True)
+    pools = [promote_source_pool(pool, ceiling=ceiling) for pool in pools]
+    trailers = [pool[0] for pool in pools]
+    shot_sets = [shot_lookup[str(path)] for path in trailers]
+    width, height = choose_export_from_pools(pools, ceiling)
+    os.environ["VIDEO_RESOLUTION"] = f"{width}x{height}"
+    sources = []
+    for film, pool in zip(films, pools):
+        for index, details in enumerate(inspect_sources(pool)):
+            details.update(film=film["title"], role="primary" if index == 0 else f"extra-{index+1}",
+                           original_primary=str(pool[index]) in original_primaries)
+            sources.append(details)
     quality_report = {"try_4k": ceiling == 2160, "ceiling_height": ceiling,
-                      "sources": sources, "export_width": width, "export_height": height}
+                      "initial_primaries": initial_sources, "sources": sources,
+                      "export_width": width, "export_height": height,
+                      "source_quality": source_quality_report(pools, (width, height))}
     save_json(work / "quality-report.json", quality_report)
-    print(f"Auto quality: {width}x{height}; highest shared primary-source resolution up to {ceiling}p. Optional extra trailers meet this quality.", flush=True)
+    print(f"Auto quality: {width}x{height}; chosen after all footage rounds and HD promotion.", flush=True)
+    scene_maps = {}
+    if _gemini.enabled():
+        # Every title's accepted primary gets a turn before extras and frame advice.
+        gemini_editing.begin_accepted_analysis(pools)
+        analyses = {}
+        for source in gemini_editing.source_rounds(pools):
+            analysis = gemini_editing.analyse_source(Path(source))
+            analyses[str(source)] = analysis
+            scene_maps[str(source)] = gemini_editing.verify_scenes(
+                analysis, shot_lookup.get(str(source), []))
+        for i, pool in enumerate(pools):
+            known_good = [source for source in pool
+                          if ((analyses.get(str(source)) or {}).get("review") or {}).get("reviewed")
+                          and ((analyses.get(str(source)) or {}).get("review") or {}).get("suitable") is not False]
+            for source in list(pool):
+                review = (analyses.get(str(source)) or {}).get("review") or {}
+                if (review.get("reviewed") and review.get("suitable") is False
+                        and (str(source) not in original_primaries or known_good)):
+                    pool.remove(source)
+                    gemini_editing.REPORT[str(source)] = {"status": "dropped",
+                        "reason": f"Gemini judged it unsuitable ({review.get('problem')})"}
+                    print(f"Gemini review: dropped {Path(source).name} for {films[i]['title']}.", flush=True)
+            pool[:] = promote_source_pool(pool, ceiling=ceiling)
+            descriptions = [line for source in pool
+                            for line in gemini_editing.scenes_for_writer(scene_maps.get(str(source), []))]
+            if descriptions:
+                films[i]["available_scenes"] = descriptions[:6]
+        trailers = [pool[0] for pool in pools]
+        shot_sets = [shot_lookup[str(path)] for path in trailers]
+        width, height = choose_export_from_pools(pools, ceiling)
+        os.environ["VIDEO_RESOLUTION"] = f"{width}x{height}"
+        sources = []
+        for film, pool in zip(films, pools):
+            for index, details in enumerate(inspect_sources(pool)):
+                details.update(film=film["title"], role="primary" if index == 0 else f"extra-{index+1}",
+                               original_primary=str(pool[index]) in original_primaries)
+                sources.append(details)
+        quality_report.update(sources=sources, export_width=width, export_height=height,
+                              source_quality=source_quality_report(pools, (width, height)))
+        save_json(work / "quality-report.json", quality_report)
     from . import scenes
     if scenes.enabled():
         described = 0
@@ -497,22 +552,6 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
 
     # Gemini's scene maps, verified against each file's real cuts, are ready BEFORE the script is
     # written: the writer sees what the footage can show, and the edit plan uses the same scenes.
-    scene_maps = {}
-    if _gemini.enabled():
-        for i, pool in enumerate(pools):
-            for source in list(pool):
-                analysis = gemini_editing.analyse_source(Path(source))
-                review = (analysis or {}).get("review") or {}
-                if source != pool[0] and review.get("reviewed") and review.get("suitable") is False:
-                    # Gemini watched this extra and found a reaction, review, fan edit, slideshow or talking heads.
-                    pool.remove(source)
-                    gemini_editing.REPORT[str(source)] = {"status": "dropped", "reason": f"Gemini judged it unsuitable ({review.get('problem')})"}
-                    print(f"Gemini review: dropped {Path(source).name} for {films[i]['title']} ({review.get('problem')}).", flush=True)
-                    continue
-                scene_maps[str(source)] = gemini_editing.verify_scenes(analysis, shot_lookup.get(str(source), []))
-            described = [line for source in pool for line in gemini_editing.scenes_for_writer(scene_maps[str(source)])]
-            if described:
-                films[i]["available_scenes"] = described[:6]
     gemini_report = gemini_editing.edit_report(films, pools, scene_maps)
     save_json(work / "gemini-edit-report.json", gemini_report)
     save_json(output / "gemini-edit-report.json", gemini_report)
@@ -583,6 +622,9 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     word_scale = 1.0
     best_draft = None
     intro_refined = False
+    measured_depth_attempted = False
+    measured_repairs = []
+    from .production_quality import repair_measured_depth
     for revision in range(3):
         try:
             speaker = episode_narrator(reference, work / "speech")
@@ -614,14 +656,28 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             print("Timing revision unavailable; retaining the earlier complete narration.", flush=True)
             break
         estimated = spoken_seconds+expected_breaks+11
-        # Auto accepts the actual useful draft. A short selected-duration draft is
-        # also kept complete rather than padded to reach a planning formula.
-        comfortable = spec.automatic or estimated <= spec.maximum
+        # A soft range guides one targeted depth repair, for Auto and selected minutes.
+        # Complete useful speech remains usable if supported improvement is unavailable.
+        comfortable = spec.minimum <= estimated <= spec.maximum
         distance = abs(estimated-spec.target)+(0 if comfortable else spec.target)
         if best_draft is None or distance < best_draft[0]:
             best_draft = (distance, script, speech)
         if comfortable or revision == 2 or any(path is None for path in speech.values()):
             break
+        if estimated < spec.minimum:
+            if measured_depth_attempted:
+                break
+            measured_depth_attempted = True
+            candidate, changed, receipt = repair_measured_depth(
+                writer, title, brief, films, script, spec, estimated, expected_breaks)
+            measured_repairs.append(receipt)
+            if not changed:
+                break
+            print("Repairing thin reviews using supported story material; unchanged speech stays cached.", flush=True)
+            script = prepare_rank_intros(candidate, films)
+            refresh_availability(script, films)
+            writer.unload()
+            continue
         print(f"Refining an unusually {'long' if estimated > spec.target else 'short'} draft; measured {estimated/60:.1f} minutes.", flush=True)
         word_scale *= max(.2, min(5.0, max(1, spec.target-expected_breaks-11)/max(1, spoken_seconds)))
         try:
@@ -634,6 +690,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             break
     _distance, script, speech = best_draft
     save_json(script_path, script)
+    save_json(work / "script-quality-report.json", {"depth": script.get("package", {}).get("depth_review", {}),
+              "measured_repairs": measured_repairs})
 
     print("Verifying narration and analysing trailer dialogue", flush=True)
     aligned = {}
@@ -1250,10 +1308,25 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         print(f"End screen skipped ({type(exc).__name__}); the final hold remains.", flush=True)
     del selector
     gc.collect()
+    from .quality_repair import inspect_visual_export, repair_visual_parts
+    visual_repairs = repair_visual_parts(parts, timeline, work / "visual-repairs", max_repairs=2)
+    save_json(work / "visual-repair-report.json", visual_repairs)
     print("Mixing and exporting final video", flush=True)
     smooth_joins(parts, tails, no_tail_parts)
     final_duration, speed = finish(parts, output / "final-video.mp4", work, action, spec=spec, music_theme=music_theme,
                                    timeline=timeline, top_title=films[0]["title"], overlays=overlays)
+    export_visual = inspect_visual_export(output / "final-video.mp4", timeline, visual_repairs)
+    visual_repairs["finished_export"] = export_visual
+    if export_visual.get("repairable_parts"):
+        remaining = repair_visual_parts(parts, timeline, work / "visual-repairs-final", max_repairs=1)
+        visual_repairs["final_pass"] = remaining
+        if remaining.get("repaired"):
+            final_duration, speed = finish(parts, output / "final-video.mp4", work, action,
+                spec=spec, music_theme=music_theme, timeline=timeline,
+                top_title=films[0]["title"], overlays=overlays)
+            visual_repairs["finished_export"] = inspect_visual_export(
+                output / "final-video.mp4", timeline, visual_repairs)
+    save_json(work / "visual-repair-report.json", visual_repairs)
     export_recovery = SpeechRecovery(None, lambda: episode_narrator(reference, work / "speech"),
         work / "export-audio-checks", fallback_factory=lambda: WhisperModel(
             "small.en", device="cpu", compute_type="int8", cpu_threads=min(os.cpu_count() or 2, 4),
@@ -1296,6 +1369,9 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     credited_trailers = list(dict.fromkeys([path for pool in pools for path in pool]+[Path(source) for source in sorted(used_video_sources)]))
     active_files = {path.name for path in credited_trailers}
     quality_report["sources"] = [source for source in sources if source["file"] in active_files]
+    quality_report["used_source_files"] = sorted({Path(path).name for path in used_video_sources})
+    quality_report["used_sources"] = [source for source in sources
+                                      if source["file"] in quality_report["used_source_files"]]
     save_json(work / "quality-report.json", quality_report)
     source_links = [json.loads(t.with_suffix('.json').read_text())["source"] for t in credited_trailers]
     (output / "description.txt").write_text(build_description(script, films, chapters, source_links, music_credit(music_theme)))
@@ -1336,12 +1412,16 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                     pass
             montage = [(entry["start"] / speed, (entry["start"] + entry["duration"]) / speed) for entry in timeline
                        if entry.get("type") in ("cold-open", "teaser") or entry.get("section_kind") in ("intro", "outro")]
-            review = build_review(output, all_cues, chapters, genre, stills_films=stills_films, montage=montage)
+            review = build_review(output, all_cues, chapters, genre, stills_films=stills_films,
+                                  montage=montage, repair_report=visual_repairs)
             notice("Review report", f"review.html: {review['black_frames']} black-frame runs, {review['repeated_shots']} repeated shots, "
                    f"{review['loudness_spikes']} loudness spikes, {review['captions_on_silence']} captions over silence.")
         except Exception as exc:  # noqa: BLE001 -- the report is advisory
             notice("Review report skipped", f"{type(exc).__name__}: {str(exc)[-300:]}", "warning")
     save_json(work / "timeline.json", {"speed": speed, "events": timeline, "chapters": chapters})
+    from .production_quality import write_quality_receipts
+    write_quality_receipts(work, output, script, measured_repairs=measured_repairs,
+                           visual_repairs=visual_repairs)
     for part in parts:
         part.unlink(missing_ok=True)
     validate_package(output, spec=spec)
