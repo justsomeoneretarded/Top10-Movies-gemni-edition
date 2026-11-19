@@ -517,7 +517,7 @@ def test_busy_video_analysis_never_blocks_writing(monkeypatch):
     monkeypatch.setattr(gemini.time, "sleep", lambda seconds: None)
     monkeypatch.setenv("GEMINI_MAX_RETRIES", "0")
     busy = Response({"error": {"status": "UNAVAILABLE", "message": "x"}}, 503)
-    provider, session = client(*[busy] * 4, Response(answer()))
+    provider, session = client(busy, Response(answer()))
     with pytest.raises(gemini.GeminiUnavailable):
         provider.generate_json("Map scenes", SCHEMA, model="gemini-3.5-flash-lite",
                                youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", video_duration=60)
