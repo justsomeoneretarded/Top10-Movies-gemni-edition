@@ -138,7 +138,9 @@ def repair_depth(writer, title, brief, films, script, *, target_seconds,
         limit = min(3, max(0, int(max_repairs)))
         entries = []
         for index, section in enumerate(result.get("sections", [])):
-            film_index = section.get("film") if isinstance(section, dict) else None
+            if not isinstance(section, dict):
+                continue
+            film_index = section.get("film")
             if (section.get("kind") != "film" or isinstance(film_index, bool)
                     or not isinstance(film_index, int) or not 0 <= film_index < len(films)):
                 continue
@@ -170,6 +172,8 @@ def repair_depth(writer, title, brief, films, script, *, target_seconds,
             result["sections"] = cached["sections"]
             package["depth_review"] = {**cached["receipt"], "cache": "hit",
                                       "phase": receipt["phase"]}
+            if estimated_seconds is not None:
+                package["depth_review"]["estimated_seconds"] = estimated_seconds
             return result
         payload = [{"rank": entry["rank"], "title": entry["title"], "material": entry["context"],
                     "narration": entry["current"][:2400],
@@ -207,8 +211,9 @@ def repair_depth(writer, title, brief, films, script, *, target_seconds,
                 continue
             if row["status"] in {"adequate", "limited_material"}:
                 continue
-            supported = [str(detail).strip() for detail in row.get("supported_details", [])[:2]
-                         if _quote_supported(detail, entry["material"])]
+            details = row.get("supported_details", [])
+            supported = [detail.strip() for detail in details[:2]
+                         if _quote_supported(detail, entry["material"])] if isinstance(details, list) else []
             if not supported:
                 record["action"] = "retained_no_supported_expansion"
                 continue
@@ -216,13 +221,17 @@ def repair_depth(writer, title, brief, films, script, *, target_seconds,
                 record["action"] = "retained_repair_limit"
                 continue
             attempted += 1
+            planned_words = result["sections"][entry["section"]].get("planning_words")
+            soft_words = (round(planned_words) if isinstance(planned_words, (int, float))
+                          and not isinstance(planned_words, bool) and math.isfinite(planned_words)
+                          and planned_words > 0 else per_film)
             try:
                 draft = writer.ask(
                     f"Improve only rank {entry['rank']}, {entry['title']!r}, in {title!r}. "
                     f"Creative direction: {brief}\nCurrent narration: {json.dumps(entry['paragraphs'], ensure_ascii=False)}\n"
                     f"Verified story material: {json.dumps(entry['material'], ensure_ascii=False)}\n"
                     f"Useful omitted details identified by the episode editor: {json.dumps(supported, ensure_ascii=False)}\n"
-                    f"About {per_film} words is a soft share of the episode plan, never a minimum or quota. "
+                    f"About {soft_words} words is a soft share of the episode plan, never a minimum or quota. "
                     "Develop useful missing thoughts with plain, specific spoken English. Preserve useful "
                     "existing details and the short rank/title announcement. Connect setup, character choices "
                     "and consequences where supported, without spoiling a reveal. Explain why the actual "
@@ -239,7 +248,7 @@ def repair_depth(writer, title, brief, films, script, *, target_seconds,
                     record["action"] = "retained_no_semantic_improvement"
                     continue
                 used = draft.get("used_details")
-                if (not isinstance(used, list) or not used
+                if (not isinstance(used, list) or not 1 <= len(used) <= 2
                         or not all(_quote_supported(detail, entry["material"]) for detail in used)):
                     record["action"] = "retained_unsupported_repair"
                     continue
@@ -248,7 +257,8 @@ def repair_depth(writer, title, brief, films, script, *, target_seconds,
                 facts = narration_material(film_facts(films[entry["film"]]))
                 facts.update(rank=entry["rank"], other_titles=[
                     film["title"] for i, film in enumerate(films) if i != entry["film"]])
-                if (not paragraphs or _section_issue(paragraphs, facts, opening=False, closing=False)
+                if (not paragraphs or normalized(entry["title"]) not in normalized(" ".join(paragraphs))
+                        or _section_issue(paragraphs, facts, opening=False, closing=False)
                         or _editorial_issue(paragraphs)):
                     record["action"] = "retained_invalid_repair"
                     continue

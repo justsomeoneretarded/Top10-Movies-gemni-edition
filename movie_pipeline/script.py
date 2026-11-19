@@ -14,7 +14,7 @@ from .availability import availability_line
 from .core import PipelineError, key, normalized, save_json
 from .timing import narration_words
 
-SCRIPT_POLICY_VERSION = 6
+SCRIPT_POLICY_VERSION = 7
 DELIVERIES = ("hype", "normal", "dramatic", "calm")
 OPENING = "a punchy opening hook, without listing every title"
 CLOSING = "a short closing thought and one audience question"
@@ -393,7 +393,8 @@ class Writer:
                 bridge = section.get("bridge", "")
                 review = [paragraph for paragraph in paragraphs if paragraph not in (availability, bridge)]
                 if stale or _section_issue(review, facts, opening=False, closing=False) or _editorial_issue(review):
-                    replacement = self.narration(title, brief, f"rank {index+1}: {facts['title']}", facts, None if section.get("automatic_runtime") else max(25, min(240, sum(len(p.split()) for p in review))))
+                    guidance = section.get("planning_words") or max(25, min(240, sum(len(p.split()) for p in review)))
+                    replacement = self.narration(title, brief, f"rank {index+1}: {facts['title']}", facts, guidance)
                     replacement, labels = self.edit(title, brief, f"the review of {facts['title']}", facts, replacement, rank=index+1)
                     section["paragraphs"] = replacement
                     section["delivery"] = labels
@@ -487,7 +488,7 @@ class Writer:
 
     def plan(self, title: str, brief: str, films: list[dict]) -> dict:
         """One pass over the whole list: angle, hooks, standout facts and escalation toward number one."""
-        cache = self.cache_dir / f"{key('episode-plan-v4-story', self.model, title, brief, [film_facts(f) for f in films])}.json" if self.cache_dir else None
+        cache = self.cache_dir / f"{key('episode-plan-v5-depth', self.model, title, brief, [film_facts(f) for f in films])}.json" if self.cache_dir else None
         if cache and cache.exists():
             return json.loads(cache.read_text())
         entry = {"type": "object", "properties": {
@@ -566,7 +567,7 @@ class Writer:
         defaults = aligned_delivery({"kind": kind, "film": (rank or 1)-1, "paragraphs": paragraphs})
         if not paragraphs:
             return paragraphs, defaults
-        cache = self.cache_dir / f"{key('edit-v3-story', self.model, topic, brief, role, narration_material(facts), paragraphs)}.json" if self.cache_dir else None
+        cache = self.cache_dir / f"{key('edit-v4-depth', self.model, topic, brief, role, narration_material(facts), paragraphs)}.json" if self.cache_dir else None
         if cache and cache.exists():
             saved = json.loads(cache.read_text())
             if saved.get("paragraphs"):
@@ -590,9 +591,11 @@ class Writer:
             "Ask whether a sentence could fit ten unrelated reviews unchanged. If so, delete it rather than finding "
             "a more impressive way to say it. Remove commentary about how effective the storytelling or atmosphere is "
             "when it merely repeats the plot or tells the audience how to feel. The plot itself can communicate the appeal. "
-            "A separate verdict or if-you-enjoy audience pitch is unnecessary. A short paragraph is enough when the "
-            "material only supports a few useful points. Do not lengthen the draft to sound more polished. "
-            "Shortening substantially is welcome; there is no minimum length or percentage to retain. "
+            "A separate verdict or if-you-enjoy audience pitch is unnecessary. Preserve distinct useful story "
+            "information, character choices and necessary setup/payoff. A thin draft with supported unused "
+            "material should develop those thoughts rather than collapse into a database synopsis. A short "
+            "paragraph is enough when the material only supports a few useful points. Do not pad to a word "
+            "count or lengthen merely to sound polished. Judge useful information, not a retention percentage. "
             "Use everyday spoken English without forced slang, invented excitement, or compulsory bridges. "
             "Keep this section's role; do not turn one review into a whole countdown. "
             + ("Keep the short opening 'Number N: Title' announcement intact. " if rank else "")
@@ -624,7 +627,7 @@ class Writer:
         visible = narration_material({name: value for name, value in facts.items() if name not in {"titles", "other_titles"}})
         if opening or closing:
             visible["count"] = max(1, facts.get("count") or len(facts.get("titles", [])))
-        cache = self.cache_dir / f"{key('narration-v11-story', self.model, topic, brief, label, visible, goal)}.json" if self.cache_dir else None
+        cache = self.cache_dir / f"{key('narration-v12-depth', self.model, topic, brief, label, visible, goal)}.json" if self.cache_dir else None
         if cache and cache.exists():
             saved = narration_paragraphs(json.loads(cache.read_text()))
             if saved:
@@ -787,7 +790,7 @@ class Writer:
                     units.append({"id":f"{i}:{p}:{n}","text":sentence,"rank":section["film"]+1})
         if len(units)<6:
             return sections
-        cache=self.cache_dir/f"{key('episode-delete-v2-story',self.model,title,brief,units)}.json" if self.cache_dir else None
+        cache=self.cache_dir/f"{key('episode-delete-v3-depth',self.model,title,brief,units)}.json" if self.cache_dir else None
         try:
             if cache and cache.exists():
                 data=json.loads(cache.read_text())
@@ -800,7 +803,8 @@ class Writer:
                     "are empty hype, forced comparison filler, an essay transition, or a spoken streaming listing. "
                     "Do not delete a unique premise, useful character detail, a supported reason to watch, "
                     "or a necessary setup/payoff. Different films may share a genre without being redundant. "
-                    "Never delete a rank/title announcement. Empty remove array is fine. "
+                    "Never delete a rank/title announcement. A shorter sentence remaining grammatical does not prove "
+                    "the omitted detail was redundant. Keep uncertain deletions. Empty remove array is fine. "
                     "No replacement prose; every remaining word stays exact. Units (JSON data): "
                     +json.dumps(units,ensure_ascii=False),schema,temperature=.2,num_ctx=12288,num_predict=450)
                 if cache:
@@ -840,6 +844,17 @@ class Writer:
                     section["paragraphs"]=edited;section["delivery"]=labels
         print(f"Whole-episode edit: removed {removed} redundant or empty sentences; no replacement padding.",flush=True)
         return result
+
+    def repair_depth(self, title: str, brief: str, films: list[dict], script: dict, *,
+                     target_seconds: float, estimated_seconds: float | None = None,
+                     trailer_seconds: float = 0, automatic: bool = True,
+                     max_repairs: int = 3) -> dict:
+        """Develop supported missing story detail without padding or a runtime gate."""
+        from .story_depth import repair_depth
+        return repair_depth(self, title, brief, films, script,
+                            target_seconds=target_seconds, estimated_seconds=estimated_seconds,
+                            trailer_seconds=trailer_seconds, automatic=automatic,
+                            max_repairs=max_repairs)
 
     def thumbnail_concepts(self, title: str, brief: str, films: list[dict], sections: list[dict]) -> list[dict]:
         from .thumbnails import normalize_concepts, select_concepts
@@ -896,16 +911,17 @@ class Writer:
             facts["other_titles"] = [film["title"] for i, film in enumerate(films) if i != index]
             if plan.get("entries", {}).get(str(index + 1)):
                 facts["episode_plan"] = {k:v for k,v in plan["entries"][str(index + 1)].items() if k != "comparison_anchor"}
-            words = None if automatic else max(1, round(per_film * weights[index]))
+            words = max(1, round(per_film * weights[index]))
+            facts["planning_words"] = words
             paragraphs = []
             # Bound each model request so long runtimes do not exceed its output limit.
-            chunks = 1 if words is None else max(1, (words + 239) // 240)
+            chunks = max(1, (words + 239) // 240)
             for part in range(chunks):
                 label = f"rank {index+1}: {films[index]['title']}"
                 if chunks > 1:
                     label += f" (part {part+1} of {chunks}; cover a distinct aspect without repeating earlier points)"
                 context = {**facts, "previous_narration_context": paragraphs[-2:]} if paragraphs else facts
-                paragraphs.extend(self.narration(title, brief, label, context, None if words is None else round(words/chunks)))
+                paragraphs.extend(self.narration(title, brief, label, context, round(words/chunks)))
             if paragraphs:
                 paragraphs[0] = short_rank_opening(paragraphs[0], index+1, films[index]["title"])
             paragraphs, delivery = self.edit(title, brief, f"the review of {films[index]['title']} at rank {index+1}", facts,
@@ -916,7 +932,7 @@ class Writer:
             if available:
                 paragraphs.append(available)
                 delivery = [*delivery, "normal"]
-            sections.append({"kind": "film", "film": index, "paragraphs": paragraphs, "availability_text": available, "delivery": delivery, "automatic_runtime": automatic})
+            sections.append({"kind": "film", "film": index, "paragraphs": paragraphs, "availability_text": available, "delivery": delivery, "automatic_runtime": automatic, "planning_words": words})
         if only is not None:
             if "outro" in only:
                 outro_facts = {"topic": title, "titles": [film["title"] for film in films],
@@ -937,7 +953,28 @@ class Writer:
                     section["paragraphs"].append(line)
                     section["bridge"] = line
                     section["delivery"] = [*section.get("delivery", []), "dramatic"]
+        before_episode_edit = deepcopy(sections)
         sections = self.episode_edit(title, brief, sections)
+        depth_result = self.repair_depth(
+            title, brief, films, {"sections": sections, "package": {}},
+            target_seconds=target_seconds, trailer_seconds=trailer_seconds,
+            automatic=automatic)
+        depth_receipt = depth_result.get("package", {}).get("depth_review", {})
+        sections = depth_result["sections"]
+        # Optional delete-only cleanup may not silently discard useful thoughts
+        # when its semantic review is unavailable. Keep the complete draft then.
+        unchecked = depth_receipt.get("status") == "unavailable"
+        unverified = {row.get("film") for row in depth_receipt.get("reviews", [])
+                      if row.get("status") == "not_assessed"
+                      or row.get("action") == "retained_repair_unavailable"}
+        restored = []
+        for index, original in enumerate(before_episode_edit):
+            if (original.get("kind") == "film" and (unchecked or original.get("film") in unverified)
+                    and sections[index].get("paragraphs") != original.get("paragraphs")):
+                sections[index] = original
+                restored.append(original["film"])
+        if restored:
+            depth_receipt["retained_pre_episode_edit"] = restored
         ending = sections[-1]["paragraphs"]
         ending_text = " ".join(ending).casefold()
         missing_actions = [word for word in ("like", "subscribe") if not re.search(rf"\b{word}\b", ending_text)]
@@ -999,6 +1036,7 @@ class Writer:
         package["thumbnail_concepts"] = self.thumbnail_concepts(title, brief, films, sections)
         package["narration_boundary_version"] = 2
         package["script_policy_version"] = SCRIPT_POLICY_VERSION
+        package["depth_review"] = depth_receipt
         if plan:
             package["episode_plan"] = plan
         from .packaging import refresh_availability
