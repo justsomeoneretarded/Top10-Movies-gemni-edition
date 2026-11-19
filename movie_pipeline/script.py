@@ -966,6 +966,8 @@ class Writer:
         unchecked = depth_receipt.get("status") == "unavailable"
         unverified = {row.get("film") for row in depth_receipt.get("reviews", [])
                       if row.get("status") == "not_assessed"
+                      or (row.get("status") in {"thin", "generic", "repetitive"}
+                          and row.get("action") != "repaired")
                       or row.get("action") == "retained_repair_unavailable"}
         restored = []
         for index, original in enumerate(before_episode_edit):
