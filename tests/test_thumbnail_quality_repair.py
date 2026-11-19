@@ -4,12 +4,9 @@ import html
 import json
 import threading
 import time
-from io import BytesIO
-
-import numpy as np
 import pytest
 import requests
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageDraw
 
 import movie_pipeline.image_discovery as discovery
 import movie_pipeline.thumbnail_studio as studio
@@ -150,8 +147,10 @@ def test_discovery_covers_whole_list_and_labels_sparse_publicity_fallback(monkey
 
     monkeypatch.setattr(discovery, "search", search)
     monkeypatch.setattr(discovery, "read_image", lambda *a: patterned((240, 40, 40), 0))
+    colors = [(20, 80, 180), (180, 30, 50), (40, 180, 60), (160, 150, 20),
+              (40, 30, 150), (180, 50, 160), (20, 170, 190), (180, 180, 180)]
     monkeypatch.setattr("movie_pipeline.stills_trailer.fetch_original",
-                        lambda path, cache: patterned((20, 80 + int(path[1:-4]) * 15, 180), int(path[1:-4])))
+                        lambda path, cache: patterned(colors[int(path[1:-4])], int(path[1:-4])))
     monkeypatch.setattr(studio, "frame_sharpness", lambda image: 100)
     monkeypatch.setattr(studio, "has_burned_text", lambda image: False)
     monkeypatch.setattr(studio, "face_quality", lambda image: (None, 1, False))

@@ -912,10 +912,19 @@ def _alternative_design(pool: list[Candidate], used: list[Candidate],
     """
     if not pool:
         raise ValueError("No verified image candidate")
+    rank_values = {}
+    metric_failures = 0
+    for candidate in pool:
+        try:
+            repeats = sum(_same_picture(candidate.image, old.image) for old in used)
+            film_use = sum(candidate.film == old.film for old in used)
+            rank_values[id(candidate)] = _candidate_readability(candidate) - repeats * 3.2 - film_use * .35
+        except (OSError, ValueError, RuntimeError, cv2.error):
+            rank_values[id(candidate)] = -10.0
+            metric_failures += 1
+    # Source metrics are evaluated once per design, not again in each pair's sort.
     def rank(candidate):
-        repeats = sum(_same_picture(candidate.image, old.image) for old in used)
-        film_use = sum(candidate.film == old.film for old in used)
-        return _candidate_readability(candidate) - repeats * 3.2 - film_use * .35
+        return rank_values[id(candidate)]
     leads = sorted(pool, key=rank, reverse=True)[:4]
     best = None
     attempts = 0
@@ -950,10 +959,11 @@ def _alternative_design(pool: list[Candidate], used: list[Candidate],
         lead = leads[0]
         canvas = finish(face_crop(lead, face_height=.43, face_x=.5), grade)
         return canvas, [lead], {"status": "fallback", "attempts": attempts,
-                               "failed_variants": failures, "reason": "optional_local_assessment_unavailable"}
+                               "failed_variants": failures, "metric_failures": metric_failures,
+                               "reason": "optional_local_assessment_unavailable"}
     _, canvas, chosen, metrics, crop = best
     return canvas, chosen, {"status": "selected", "attempts": attempts,
-                           "failed_variants": failures, "metrics": metrics,
+                           "failed_variants": failures, "metric_failures": metric_failures, "metrics": metrics,
                            "crop": crop, "improved_over_first": initial_score is not None and best[0] > initial_score + .001,
                            "basis": "bounded local readability and diversity; not a CTR prediction"}
 
@@ -1029,7 +1039,7 @@ def build(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]], 
         save_design(2, finish(face_crop(single, face_height=0.5, face_x=0.42), grade), "face", [single])
 
     # 3-5: compare source choices and safe crops instead of taking the next
-    # high-scoring image blindly. Options1/2 above are deliberately unchanged.
+    # high-scoring image blindly. Options 1/2 above are deliberately unchanged.
     quality_repairs = []
     for number in (3, 4, 5):
         image, chosen, assessment = _alternative_design(
@@ -1045,7 +1055,7 @@ def build(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]], 
     from .image_discovery import gather_photos
     photos, provenance = gather_photos(films, work / "image-search")
     photo_used = []
-    # Diversity considers sources already shown in1–5 too. A repeated source is
+    # Diversity considers sources already shown in 1–5 too. A repeated source is
     # permitted when the verified pool is small, but exact repeated designs lose.
     for number in range(6, 11):
         if photos:
