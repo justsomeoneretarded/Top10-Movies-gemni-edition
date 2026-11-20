@@ -174,6 +174,35 @@ def punch(envelope: np.ndarray, start: float, end: float, rate: int = 10) -> flo
     return float(np.clip(best / 24, 0, 1))
 
 
+ANALYSIS_POLICY = "calm-v7"
+
+
+def _analysis_identity(path: Path) -> dict:
+    from .gemini_editing import source_fingerprint
+    return {**source_fingerprint(path), "policy": ANALYSIS_POLICY}
+
+
+def _frame_identity_matches(directory: Path, identity: dict) -> bool:
+    if identity.get("missing"):
+        return False
+    try:
+        return json.loads((directory / "source.json").read_text()) == identity
+    except (OSError, ValueError):
+        return False
+
+
+def _valid_shots(shots, length: float) -> bool:
+    if not isinstance(shots, list) or not shots:
+        return False
+    try:
+        return all(isinstance(shot, dict) and
+                   math.isfinite(float(shot["start"])) and math.isfinite(float(shot["end"])) and
+                   0 <= float(shot["start"]) < float(shot["end"]) <= length + .05
+                   for shot in shots)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def analyse(path: Path, cache: Path) -> list[dict]:
     """Sample cuts and motion at 2fps; preserve source timestamps, excluding end slates.
 
@@ -181,27 +210,36 @@ def analyse(path: Path, cache: Path) -> list[dict]:
     combined: the trailer's scare/impact beats) and ``text_card`` for rating, release or
     studio cards found by OCR, which never reach the edit.
     """
-    cache = cache.with_name(cache.stem + ".calm-v6.json")
     length = duration(path)
-    # Cross-run cache (restored by the workflow): the same video file, recognised by its name,
-    # size and length, is never analysed twice.
-    shared = Path(os.getenv("ANALYSIS_CACHE", "work/analysis-cache")) / f"{path.stem}-{path.stat().st_size}-{length:.2f}.calm-v6.json"
-    if cache.exists():
-        shots = json.loads(cache.read_text())
-        if not shared.exists():
-            try:
-                shared.parent.mkdir(parents=True, exist_ok=True)
-                save_json(shared, shots)
-            except OSError:
-                pass
-        return shots
-    if shared.exists():
+    identity = _analysis_identity(path)
+    suffix = identity.get("sha256")
+    # Old name/size/duration caches cannot identify replaced source bytes.
+    # Ignore them nonfatally; model and Python caches are unrelated.
+    cache = cache.with_name(cache.stem + f".{ANALYSIS_POLICY}-{suffix}.json")
+    shared = Path(os.getenv("ANALYSIS_CACHE", "work/analysis-cache")) / f"{suffix}-{length:.3f}.{ANALYSIS_POLICY}.json"
+    for candidate in (cache, shared):
         try:
-            shots = json.loads(shared.read_text())
-            cache.write_text(json.dumps(shots))
+            shots = json.loads(candidate.read_text())
+            if not _valid_shots(shots, length) or identity.get("missing"):
+                continue
+            if candidate != cache:
+                save_json(cache, shots)
+            elif not shared.exists():
+                try:
+                    save_json(shared, shots)
+                except OSError:
+                    pass
             return shots
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError, TypeError):
+            continue
+    # Only source-derived frame copies are invalidated when the bytes change.
+    frames_dir = path.with_suffix(".frames")
+    if not _frame_identity_matches(frames_dir, identity):
+        if frames_dir.is_dir():
+            for saved in frames_dir.glob("*.jpg"):
+                saved.unlink(missing_ok=True)
+        frames_dir.mkdir(exist_ok=True)
+    (frames_dir / "source.json").unlink(missing_ok=True)
     # Studio channel end slates (subscribe, playlists, social links) can run longer than the
     # default final 10%; OCR finds where they begin so they never reach the edit.
     end = length * 0.90
@@ -294,6 +332,7 @@ def analyse(path: Path, cache: Path) -> list[dict]:
     cards = sum(1 for shot in shots if shot.get("text_card"))
     if cards:
         print(f"{cards} rating/promo/text cards found in {path.name}; they are kept out of the edit.", flush=True)
+    save_json(frames_dir / "source.json", identity)
     save_json(cache, shots)
     try:
         shared.parent.mkdir(parents=True, exist_ok=True)
@@ -306,7 +345,7 @@ def analyse(path: Path, cache: Path) -> list[dict]:
 def shot_frame(path: Path, shots: list[dict], index: int) -> Image.Image:
     """The shot's middle frame, from analysis's saved copy when present (no seek into the video)."""
     saved = path.with_suffix(".frames") / f"{index:04}.jpg"
-    if saved.exists():
+    if saved.exists() and _frame_identity_matches(saved.parent, _analysis_identity(path)):
         try:
             return Image.open(saved).convert("RGB")
         except OSError:

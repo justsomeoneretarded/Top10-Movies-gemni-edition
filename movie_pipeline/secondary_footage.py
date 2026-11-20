@@ -293,7 +293,7 @@ def _download_secondary(film: dict, root: Path, primary: Path, minimum_size: tup
                 continue
             save_json(attempt.with_suffix('.json'), {'source':url,'primary_source':source,'title':info.get('title'),
                       'channel':info.get('channel'),'curated':curated,'fan_edit':bool(FAN.search(info.get('title',''))),
-                      'source_width':width,'source_height':height,'secondary_version':1,'novelty':novelty,'existing_sources':accepted_sources,'slot':slot})
+                      'source_width':width,'source_height':height,'film_kind':film.get('kind'),'film_id':film.get('id'),'secondary_version':1,'novelty':novelty,'existing_sources':accepted_sources,'slot':slot})
             attempt.replace(target)
             attempt.with_suffix('.json').replace(target.with_suffix('.json'))
             retained=True
