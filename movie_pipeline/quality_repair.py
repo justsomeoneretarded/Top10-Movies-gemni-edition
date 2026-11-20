@@ -174,7 +174,8 @@ def repair_visual_parts(parts, timeline, work, *, max_repairs=3):
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
     report = {"schema_version": 1, "basis": "rendered_parts_before_mix",
-              "repaired": [], "advisories": [], "unresolved": [], "inspected_parts": 0}
+              "repaired": [], "advisories": [], "unresolved": [], "inspected_parts": 0,
+              "attempted_repairs": 0}
     limit = max(0, min(3, int(max_repairs)))
     if len(parts) != len(timeline):
         report["unresolved"].append({"reason": "part_timeline_identity_mismatch"})
@@ -182,7 +183,7 @@ def repair_visual_parts(parts, timeline, work, *, max_repairs=3):
         return report
     deadline = time.monotonic() + _time_limit()
     for index, (value, event) in enumerate(zip(parts, timeline)):
-        if time.monotonic() >= deadline or len(report["repaired"]) >= limit:
+        if time.monotonic() >= deadline or report["attempted_repairs"] >= limit:
             report["uninspected_parts"] = len(parts) - index
             break
         if not _context_allowed(event):
@@ -200,9 +201,10 @@ def repair_visual_parts(parts, timeline, work, *, max_repairs=3):
                 if verdict["status"] != "repairable":
                     report["advisories"].append(row)
                     continue
-                if len(report["repaired"]) >= limit or time.monotonic() >= deadline:
+                if report["attempted_repairs"] >= limit or time.monotonic() >= deadline:
                     report["unresolved"].append({**row, "reason": "bounded_repair_allowance"})
                     continue
+                report["attempted_repairs"] += 1
                 try:
                     proof = _replace_empty_gap(path, start, end, verdict["hold"],
                                                work / f"part-{index:03}-{len(report['repaired']):02}")

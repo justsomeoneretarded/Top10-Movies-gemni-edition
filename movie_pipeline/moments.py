@@ -22,6 +22,9 @@ def complete_window(candidate: dict, cues: list[dict], extent: tuple[float,float
     """Grow to full recognized utterances instead of truncating their words."""
     start,end=candidate["start"],candidate["start"]+candidate["duration"]
     low,high=extent
+    if not (all(math.isfinite(value) for value in (start,end,low,high))
+            and 0 <= low <= start < end <= high):
+        return None
     ordered=sorted(cues,key=lambda c:c.get("start",0))
     indices=[i for i,c in enumerate(ordered) if c.get("end",0)>start-.12 and c.get("start",high)<end+.12]
     relevant=[]
