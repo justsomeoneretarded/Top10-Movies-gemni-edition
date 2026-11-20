@@ -24,6 +24,7 @@ from movie_pipeline import (
     secondary_footage,
     shots,
     speech_recovery,
+    video_settings,
     voice,
 )
 from movie_pipeline.core import PipelineError, key, save_json, write_srt
@@ -210,7 +211,10 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
             assert existing is not None
         records["footage_order"].append(("secondary" if slot == 2 else f"extra-{slot}", film["id"]))
         records['extra_attempts'] = records.get('extra_attempts', 0)+1
-        assert minimum_size == expected_size
+        # Discovery follows this film's incumbent detail, capped at 1080p;
+        # it is independent of the final canvas chosen from all accepted pools.
+        native_height = source_height if film["id"] == 1 else 2160
+        assert minimum_size == video_settings.SIZES[min(native_height, 1080)]
         if extra_mode == 'render-fails' and slot >= 3:
             return None  # exercise failed second decoding with a missing third
         if extra_mode == 'raises':
@@ -405,7 +409,23 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
         records.setdefault('rank_labels', []).append({'title': title, 'rank': rank, 'year': year})
         path.write_bytes(b'label')
 
-    monkeypatch.setattr(cli, 'inspect_sources', lambda paths: [{"file": p.name, "width": round((source_height if i==0 else 2160)*16/9), "height": source_height if i==0 else 2160} for i,p in enumerate(paths)])
+    def source_probe(path):
+        # Every metadata consumer sees the same actual file dimensions. In
+        # particular, inspecting one film's extras must not turn its HD primary
+        # into 4K just because it moved to a different position in a list.
+        film_id = int(Path(path).stem.split("-")[1])
+        native_height = source_height if film_id == 1 else 2160
+        return {"streams": [{"codec_type": "video",
+                             "width": round(native_height * 16 / 9),
+                             "height": native_height}]}
+
+    # Exercise real inspection, discovery, promotion and export policy together;
+    # only decoding is faked because these fixture files contain test bytes.
+    monkeypatch.setattr(video_settings, "probe", source_probe)
+    monkeypatch.setattr("movie_pipeline.quality_repair.repair_visual_parts",
+                        lambda *args, **kwargs: {"repaired": [], "advisories": []})
+    monkeypatch.setattr("movie_pipeline.quality_repair.inspect_visual_export",
+                        lambda *args, **kwargs: {"repairable_parts": []})
     monkeypatch.setattr(cli, 'voice_reference', reference_for)
     monkeypatch.setattr(cli, 'duration', lambda path: durations[str(path)])
     monkeypatch.setattr(speech_recovery, 'duration', lambda path: durations[str(path)])
@@ -590,6 +610,16 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
     quality_report = json.loads(next((tmp_path / "jobs").glob("*/quality-report.json")).read_text())
     assert quality_report["try_4k"] == (try_4k == "true")
     assert (quality_report["export_width"], quality_report["export_height"]) == expected_size
+    source_quality = quality_report["source_quality"]
+    assert not source_quality["unknown_sources"]
+    assert (source_quality["export_width"], source_quality["export_height"]) == expected_size
+    for details in source_quality["sources"]:
+        native_height = source_height if details["film_index"] == 0 else 2160
+        assert details["height"] == native_height
+        assert details["width"] == round(native_height * 16 / 9)
+        factor = max(expected_size[0] / details["width"], expected_size[1] / native_height)
+        assert details["upscale_factor"] == pytest.approx(round(max(1, factor), 4))
+        assert details["below_canvas"] is (factor > 1.001)
     assert records['cta_render']['plan']['animated'] is True
     assert records['cta_render']['plan']['path'].endswith('.gif')
     assert len(records['review_previews']) == count
@@ -720,6 +750,54 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
         with Image.open(output / f'thumbnail-{i:02}.jpg') as thumbnail:
             assert thumbnail.size == (1280, 720)
     assert not list(timeline_file.parent.glob('part-*.mp4'))
+
+
+@pytest.mark.parametrize("primary_heights,extra_heights,ceiling,expected_size", [
+    ([360, 360], [1080, 1080], 2160, (1920, 1080)),
+    ([360, 360], [None, None], 2160, (640, 360)),
+    ([360, 360], [None, None], 1080, (1920, 1080)),
+    ([1080, 2160, 2160, 2160, 2160], [None] * 5, 2160, (2560, 1440)),
+    ([720, 2160, 2160, 2160, 2160], [None] * 5, 2160, (1920, 1080)),
+])
+def test_pool_discovery_promotion_and_export_share_actual_source_metadata(
+        monkeypatch, tmp_path, primary_heights, extra_heights, ceiling, expected_size):
+    """Discovery admits upgrades; export reflects the best accepted copy per title."""
+    from movie_pipeline.source_pool import promote_source_pool
+
+    heights = {}
+    pools = []
+    for film_id, (primary_height, extra_height) in enumerate(zip(primary_heights, extra_heights), 1):
+        primary = tmp_path / f"movie-{film_id}.mp4"
+        primary.write_bytes(b"primary test bytes")
+        heights[primary] = primary_height
+        pool = [primary]
+        if extra_height is not None:
+            extra = tmp_path / f"movie-{film_id}-extra.mp4"
+            extra.write_bytes(b"accepted higher-resolution test bytes")
+            heights[extra] = extra_height
+            pool.append(extra)
+        pools.append(pool)
+
+    def probe_source(path):
+        height = heights[Path(path)]
+        return {"streams": [{"codec_type": "video", "width": round(height * 16 / 9), "height": height}]}
+
+    monkeypatch.setattr(video_settings, "probe", probe_source)
+    for pool, height in zip(pools, primary_heights):
+        assert video_settings.discovery_size(pool[0], ceiling) == video_settings.SIZES[min(height, 1080)]
+    promoted = [promote_source_pool(pool, ceiling=ceiling) for pool in pools]
+    for before, after in zip(pools, promoted):
+        assert set(after) == set(before)  # promotion never moves footage between titles
+        assert after[0] == max(before, key=lambda path: heights[path])
+    assert video_settings.choose_export_from_pools(promoted, ceiling) == expected_size
+    report = video_settings.source_quality_report(promoted, expected_size)
+    assert not report["unknown_sources"]
+    assert len(report["sources"]) == sum(map(len, pools))
+    for index, pool in enumerate(promoted):
+        primary_row = next(row for row in report["sources"]
+                           if row["film_index"] == index and row["role"] == "primary")
+        assert primary_row["file"] == pool[0].name
+        assert primary_row["height"] == heights[pool[0]]
 
 
 @pytest.mark.parametrize('seconds', [8.5, 10.0, 12.0])
