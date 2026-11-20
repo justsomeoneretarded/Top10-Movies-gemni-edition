@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from movie_pipeline import cli
 
 FILMS = [{"title": "A", "year": 2020}, {"title": "B", "year": 2021}, {"title": "C", "year": 2022}]
@@ -54,17 +56,39 @@ def test_script_stage_writes_only_its_section(monkeypatch, tmp_path):
     assert FakeWriter.calls == [("write", {"film-2"}, 300)]
 
 
-def test_footage_stage_downloads_analyses_and_describes_one_title(monkeypatch, tmp_path):
+@pytest.mark.parametrize("cloud_enabled", [False, True], ids=["local-description", "deferred-cloud-description"])
+def test_footage_stage_downloads_and_analyses_only_its_primary(
+        monkeypatch, tmp_path, capsys, cloud_enabled):
     seen = {}
+    trailer = Path("t.mp4")
+    shots = [{"start": 0, "end": 5}]
     monkeypatch.setattr(cli, "setup_run", lambda *a: context(tmp_path))
-    monkeypatch.setattr("movie_pipeline.footage.download", lambda film, root: seen.setdefault("film", film) and Path("t.mp4"))
+    monkeypatch.setattr("movie_pipeline.gemini.enabled", lambda: cloud_enabled)
+    monkeypatch.setattr("movie_pipeline.footage.download",
+                        lambda film, root: seen.setdefault("film", film) and trailer)
     monkeypatch.setattr("movie_pipeline.secondary_footage.download_secondary",
-                        lambda *args, **kwargs: seen.setdefault("extra_called", True))
-    monkeypatch.setattr("movie_pipeline.shots.analyse", lambda path, cache: [{"start": 0, "end": 5}])
-    monkeypatch.setattr("movie_pipeline.scenes.describe_trailer", lambda path, shots: seen.setdefault("described", len(shots)))
-    monkeypatch.setattr("movie_pipeline.scenes.unload", lambda: None)
-    cli.warm("footage", "1", "t", "b", "m", tmp_path, tmp_path / "out")
-    assert seen == {"film": FILMS[1], "described": 1}
+                        lambda *args, **kwargs: pytest.fail("Warm footage must not fetch optional sources"))
+
+    def analyse(path, cache):
+        assert path == trailer
+        assert cache == trailer.with_suffix(".shots.json")
+        seen["analysed"] = True
+        return shots
+
+    def describe(path, values):
+        assert not cloud_enabled, "Cloud frame advice waits until the final accepted pool exists"
+        assert path == trailer and values is shots
+        seen["described"] = len(values)
+
+    monkeypatch.setattr("movie_pipeline.shots.analyse", analyse)
+    monkeypatch.setattr("movie_pipeline.scenes.describe_trailer", describe)
+    monkeypatch.setattr("movie_pipeline.scenes.unload", lambda: seen.setdefault("unloaded", True))
+    result = cli.warm("footage", "1", "t", "b", "m", tmp_path, tmp_path / "out")
+    assert result == {"trailer": str(trailer), "extra": ""}
+    assert seen == {"film": FILMS[1], "analysed": True, "unloaded": True,
+                    **({} if cloud_enabled else {"described": 1})}
+    assert ("Cloud scene advice deferred until the accepted pool is selected." in
+            capsys.readouterr().out) is cloud_enabled
 
 
 def test_failed_warm_up_is_a_warning_not_a_crash(monkeypatch, tmp_path, capsys):
