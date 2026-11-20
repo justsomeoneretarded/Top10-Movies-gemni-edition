@@ -7,7 +7,8 @@ import json
 import pytest
 
 from movie_pipeline.core import PipelineError
-from movie_pipeline.production_quality import fallback_pool_inputs, repair_measured_depth, write_quality_receipts
+from movie_pipeline.production_quality import (choose_narrated_draft, fallback_pool_inputs,
+    refresh_stale_plan, repair_measured_depth, write_quality_receipts)
 
 
 def draft():
@@ -102,3 +103,66 @@ def test_receipts_copy_current_job_only_and_export_actual_spoken_script(tmp_path
     assert json.loads((output / "audio-review.json").read_text())["current"]
     assert "A doctor works" in (output / "final-script.txt").read_text()
     assert json.loads((output / "production-quality-report.json").read_text())["measured_repairs"]
+
+
+def speech_for(script):
+    return {(i, p): Path(f"speech-{i}-{p}.wav")
+            for i, section in enumerate(script["sections"])
+            for p in range(len(section["paragraphs"]))}
+
+
+@pytest.mark.parametrize("distance", [10, 11, 30])
+def test_complete_substantive_repair_is_kept_even_if_duration_is_equal_or_less_close(distance):
+    original, repaired = draft(), draft()
+    repaired["sections"][1]["paragraphs"][1] += " Patients arrive faster than the team can treat them."
+    previous = (10, original, speech_for(original))
+    selected, adopted = choose_narrated_draft(previous, distance, repaired, speech_for(repaired), prefer_quality=True)
+    assert adopted and selected[1] is repaired
+
+
+@pytest.mark.parametrize("missing", ["none", "key"])
+def test_incomplete_repaired_speech_never_discards_a_complete_take(missing):
+    original, repaired = draft(), draft()
+    previous = (10, original, speech_for(original))
+    speech = speech_for(repaired)
+    if missing == "none":
+        speech[(1, 1)] = None
+    else:
+        del speech[(1, 1)]
+    selected, adopted = choose_narrated_draft(previous, 0, repaired, speech, prefer_quality=True)
+    assert not adopted and selected is previous
+
+
+def test_normal_timing_revision_still_prefers_the_closer_complete_draft():
+    original, revised = draft(), draft()
+    previous = (10, original, speech_for(original))
+    assert choose_narrated_draft(previous, 11, revised, speech_for(revised))[0] is previous
+    assert choose_narrated_draft(previous, 9, revised, speech_for(revised))[0][1] is revised
+
+
+def test_already_pruned_extra_still_permits_same_title_fallback():
+    original, removed, other = map(Path, ["movie-1.mp4", "movie-1-extra3.mp4", "movie-2.mp4"])
+    pools, trailers, shots = [[original], [other]], [original, other], [[], []]
+    lookup = {str(original): [{"start": 0, "end": 8}], str(other): []}
+    assert fallback_pool_inputs(pools, trailers, shots, lookup, trailers[:],
+                                {str(removed)}, affected_films={0})
+    assert pools == [[original], [other]] and trailers == [original, other]
+
+
+def test_stale_montage_replans_only_removed_source_with_stable_film_identity():
+    original, removed, other = map(Path, ["movie-1.mp4", "movie-1-extra3.mp4", "movie-2.mp4"])
+    calls = []
+    class Selector:
+        def choose(self, source, shots, text, seconds, action, **kwargs):
+            calls.append(source)
+            return [{"start": 2, "duration": seconds}]
+    keep = {"source": str(other), "start": 4, "duration": 3, "film_index": 1}
+    stale = {"source": str(removed), "start": 5, "duration": 4, "still": True}
+    image = {"source": "meme.jpg", "image": True, "duration": 2}
+    result = refresh_stale_plan(Selector(), [keep, stale, image], [[original], [other]],
+        [original, other], [[{"start": 0, "end": 10}], []],
+        {str(original): 0, str(removed): 0, str(other): 1}, "context", False, 1)
+    assert result[0] is keep and result[2] is image
+    assert result[1]["source"] == str(original) and result[1]["film_index"] == 0
+    assert result[1]["duration"] == 4 and result[1]["still"]
+    assert calls == [original]

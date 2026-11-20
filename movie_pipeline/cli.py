@@ -394,7 +394,6 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     from .source_pool import (
         best_intro_sources,
         choose_from_sources,
-        primary_fallback_plan,
         promote_source_pool,
     )
     from .speech_recovery import SpeechRecovery, SpeechRecoveryError
@@ -624,7 +623,9 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     intro_refined = False
     measured_depth_attempted = False
     measured_repairs = []
-    from .production_quality import repair_measured_depth
+    pending_depth_receipt = None
+    measured_draft = None
+    from .production_quality import choose_narrated_draft, repair_measured_depth
     for revision in range(3):
         try:
             speaker = episode_narrator(reference, work / "speech")
@@ -651,6 +652,9 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                 len(script["sections"][i]["paragraphs"][p].split())*60/145
                 for (i, p), path in speech.items())
         except Exception:
+            if pending_depth_receipt is not None:
+                pending_depth_receipt.update(adopted=False, adoption_reason="new_narration_unavailable")
+                pending_depth_receipt = None
             if best_draft is None:
                 raise
             print("Timing revision unavailable; retaining the earlier complete narration.", flush=True)
@@ -660,8 +664,13 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
         # Complete useful speech remains usable if supported improvement is unavailable.
         comfortable = spec.minimum <= estimated <= spec.maximum
         distance = abs(estimated-spec.target)+(0 if comfortable else spec.target)
-        if best_draft is None or distance < best_draft[0]:
-            best_draft = (distance, script, speech)
+        best_draft, adopted = choose_narrated_draft(
+            best_draft, distance, script, speech, prefer_quality=pending_depth_receipt is not None)
+        if pending_depth_receipt is not None:
+            pending_depth_receipt.update(adopted=adopted, adoption_reason=(
+                "complete_repaired_narration" if adopted else "new_narration_incomplete"))
+            measured_draft = script if adopted else None
+            pending_depth_receipt = None
         if comfortable or revision == 2 or any(path is None for path in speech.values()):
             break
         if estimated < spec.minimum:
@@ -676,7 +685,11 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             print("Repairing thin reviews using supported story material; unchanged speech stays cached.", flush=True)
             script = prepare_rank_intros(candidate, films)
             refresh_availability(script, films)
-            writer.unload()
+            pending_depth_receipt = receipt
+            try:
+                writer.unload()
+            except Exception:  # optional cleanup cannot discard the complete narration
+                pass
             continue
         print(f"Refining an unusually {'long' if estimated > spec.target else 'short'} draft; measured {estimated/60:.1f} minutes.", flush=True)
         word_scale *= max(.2, min(5.0, max(1, spec.target-expected_breaks-11)/max(1, spoken_seconds)))
@@ -689,6 +702,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             print("Timing rewrite unavailable; retaining a complete draft.", flush=True)
             break
     _distance, script, speech = best_draft
+    if measured_draft is not None and measured_draft is not script:
+        measured_repairs[-1].update(adopted=False, adoption_reason="superseded_by_complete_timing_revision")
     save_json(script_path, script)
     save_json(work / "script-quality-report.json", {"depth": script.get("package", {}).get("depth_review", {}),
               "measured_repairs": measured_repairs})
@@ -759,26 +774,55 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
 
     action = genre in {"action", "adventure"}
     selector = ShotSelector()
+    # Retain identity even after pruning: precomputed previews may still name a removed extra.
+    source_film_indices = {str(source): index for index, pool in enumerate(pools) for source in pool}
+    from .production_quality import fallback_pool_inputs, refresh_stale_plan
     selector.source_films = {str(source): f"{film.get('kind', 'movie')}:{film.get('id', film['title'])}"
                              for film, pool in zip(films, pools) for source in pool}
     selector.peak_weight = {"horror": 1.1, "action": 1.1, "thriller": 1.0, "adventure": 0.9, "scifi": 0.9, "fantasy": 0.9}.get(genre, 0.6)
     selector.titles = {str(source): film["title"] for film, pool in zip(films, pools) for source in pool}
-    for film, trailer, shots in zip(films, trailers, shot_sets):
-        selector.index(trailer, shots)
+    for index, film in enumerate(films):
+        trailer = trailers[index]
+        try:
+            selector.index(trailer, shot_sets[index])
+        except (PipelineError, OSError, RuntimeError, ValueError):
+            if not fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup,
+                    original_primary_paths, {str(trailer)}, affected_films={index}):
+                raise
+            trailer = trailers[index]
+            selector.index(trailer, shot_sets[index])
+            # Dialogue timestamps belong to exact bytes, never another pool member.
+            cache = trailer.with_suffix(".dialogue.json")
+            cues = json.loads(cache.read_text()) if cache.exists() else captions(trailer, recognizer)
+            save_json(cache, cues)
+            trailer_cues[index] = cues
+            print(f"Primary source analysis fallback for {film['title']}; retained same-title footage.", flush=True)
         selector.people[str(trailer)] = film.get("cast", [])
     for film, pool in zip(films, pools):
-        for extra in pool[1:]:
+        for extra in list(pool[1:]):
             try:
                 selector.index(extra, shot_lookup[str(extra)])
                 selector.people[str(extra)] = film.get("cast", [])
             except Exception:  # noqa: BLE001 -- optional analysis failure uses the primary source.
                 pool.remove(extra)
                 print(f"Optional trailer analysis skipped for {film['title']}.", flush=True)
+    # All indexing fallbacks settle before the first part fixes the output canvas.
+    width, height = choose_export_from_pools(pools, ceiling)
+    os.environ["VIDEO_RESOLUTION"] = f"{width}x{height}"
+    quality_report.update(export_width=width, export_height=height)
+    quality_report["source_quality"] = source_quality_report(pools, (width, height))
     active_files = {path.name for pool in pools for path in pool}
-    quality_report["sources"] = [source for source in sources if source["file"] in active_files]
+    sources = []
+    for film, pool in zip(films, pools):
+        for index, details in enumerate(inspect_sources(pool)):
+            details.update(film=film["title"], role="primary" if index == 0 else f"extra-{index+1}",
+                           original_primary=str(pool[index]) in original_primaries)
+            sources.append(details)
+    quality_report["sources"] = sources
     save_json(work / "quality-report.json", quality_report)
     notice("Shot matching", f"{'SigLIP 2' if getattr(selector, 'siglip', None) is not None else 'CLIP'} image matching; "
            f"AI scene descriptions for {len(getattr(selector, 'scene_embeddings', {}))} of {len(active_files)} trailers.")
+    planned_primaries = list(trailers)
     ending_cards = {i: choose_title_card(selector, pool, shot_lookup, films[i]["title"])
                     for i, pool in enumerate(pools)}
     card_kind = getattr(selector, "card_kind", None)
@@ -969,6 +1013,10 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
     for number, shot in enumerate(opening):
         film_index = shot["film_index"]
         source = Path(shot["source"])
+        if source not in pools[film_index]:
+            shot = {**choose_preview(selector, pools[film_index], shot_lookup,
+                    title+". "+brief, shot["duration"], action, dialogue=dialogue), "film_index": film_index}
+            source = Path(shot["source"])
         path = work / f"part-{len(parts):03}.mp4"
         sounding = smooth and not shot["muted"] and not shot.get("still")
         follows = number + 1 < len(opening) and not opening[number+1]["muted"] and not opening[number+1].get("still")
@@ -978,7 +1026,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             gain_db = trailer_video(source, shot["start"], shot["duration"], path, muted=shot["muted"],
                           still=bool(shot.get("still", False)), still_motion="zoom_in" if shot.get("still") else None, **edges)
         except (PipelineError, OSError, RuntimeError, ValueError):
-            if source == trailers[film_index]:
+            if not fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup,
+                    original_primary_paths, {str(source)}, affected_films={film_index}):
                 raise
             shot = {**choose_preview(selector, [trailers[film_index]], shot_lookup,
                     title+". "+brief, shot["duration"], action, dialogue=dialogue), "film_index": film_index}
@@ -1020,6 +1069,10 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             label = work / f"label-{section_index}.png"
             label_image(label, film["title"], film_index+1, film["year"])
             preview = previews[section_index]
+            if Path(preview["source"]) not in pools[film_index]:
+                preview = choose_preview(selector, pools[film_index], shot_lookup,
+                    title+". "+brief, REVIEW_PREVIEW_SECONDS, section_action, dialogue=dialogue)
+                previews[section_index] = preview
             style = reveal_style_for(film_position, film_index+1)
             film_position += 1
             source = Path(preview["source"])
@@ -1035,7 +1088,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             except (PipelineError, OSError, RuntimeError, ValueError):
                 from .production_quality import fallback_pool_inputs
                 if not fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup,
-                                            original_primary_paths, {str(source)}):
+                                            original_primary_paths, {str(source)}, affected_films={film_index}):
                     raise
                 trailer = trailers[film_index]
                 preview = choose_preview(selector, [trailer], shot_lookup, title+". "+brief,
@@ -1062,7 +1115,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             except (PipelineError, OSError, RuntimeError, ValueError):
                 from .production_quality import fallback_pool_inputs
                 if not fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup,
-                                            original_primary_paths, {str(source)}):
+                                            original_primary_paths, {str(source)}, affected_films={film_index}):
                     raise
                 trailer = trailers[film_index]
                 print("Reveal still unavailable; keeping the complete announcement over an alternate verified source.", flush=True)
@@ -1122,6 +1175,9 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             audio = speech[(section_index, paragraph_index)]
             selector.pace_limit = pace_limit(aligned_delivery(section)[paragraph_index], section_action)
             chosen = montage[paragraph_index] if montage is not None else choose_from_sources(selector, pools[film_index], shot_lookup, text, duration(audio), section_action)
+            chosen = refresh_stale_plan(selector, chosen, pools, trailers, shot_sets,
+                source_film_indices, text, section_action, film_index)
+            trailer = trailers[film_index]
             if montage is None and is_film:
                 chosen = stills_instead_of_repeats(chosen, film_index)
             if is_film and duration(audio) >= 4:
@@ -1150,11 +1206,14 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                     failed = {str(cut.get("source", trailer)) for cut in chosen if not cut.get("image")}
                     from .production_quality import fallback_pool_inputs
                     if not fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup,
-                                                original_primary_paths, failed):
+                                                original_primary_paths, failed,
+                                                affected_films={source_film_indices[source] for source in failed
+                                                                if source in source_film_indices}):
                         raise
                     trailer = trailers[film_index]
                     print("Footage could not render; retrying this paragraph once with a verified same-title source.", flush=True)
-                    chosen = primary_fallback_plan(selector, chosen, trailers, shot_sets, text, section_action, film_index)
+                    chosen = refresh_stale_plan(selector, chosen, pools, trailers, shot_sets,
+                        source_film_indices, text, section_action, film_index)
                     speech_video(trailer, audio, chosen, path, None, work / f"render-{len(parts):03}")
             if section["kind"] == "subscribe":
                 no_tail_parts.add(str(path))
@@ -1171,6 +1230,9 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
             parts.append(path)
             offset += seconds
             native_clip = native_insertions.get(section_index, {}).get(paragraph_index)
+            if native_clip and Path(native_clip["source"]) not in pools[film_index]:
+                # A precomputed native transcript cannot be transferred to replacement bytes.
+                native_clip = None
             if native_clip:
                 native_path = work / f"part-{len(parts):03}.mp4"
                 native_sound = smooth and not native_clip.get("muted", False)
@@ -1202,7 +1264,7 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                     parts.append(native_path)
                     used_video_sources.add(native_clip["source"])
                     offset += seconds
-            elif not native_plan:
+            elif not native_plan and trailers[film_index] == planned_primaries[film_index]:
                 body_index = paragraph_index - (1 if is_film else 0)
                 impact = impacts.get(section_index) if body_index == 0 else None
                 if impact:
@@ -1260,6 +1322,8 @@ def produce(title: str, brief: str, movies: str, work: Path, output: Path):
                 tracker = work / f"tracker-{film_index+1}.png"
                 tracker_image(tracker, len(films), film_index+1)
                 overlays.append((tracker, label_end, switch, "lower-left"))
+        if card and Path(card["source"]) not in pools[film_index]:
+            card = None
         if card:
             source = Path(card["source"])
             path = work / f"part-{len(parts):03}.mp4"

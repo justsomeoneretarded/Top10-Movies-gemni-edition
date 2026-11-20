@@ -80,7 +80,8 @@ def write_quality_receipts(work: Path, output: Path, script: dict, *, measured_r
     (output / "final-script.txt").write_text("\n\n".join(paragraphs) + "\n", encoding="utf-8")
 
 
-def fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup, original_primary_paths, failed_sources):
+def fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup, original_primary_paths, failed_sources,
+                         *, affected_films=None):
     """One bounded render fallback, retaining title identity and original speech.
 
     A multi-source FFmpeg error does not identify every bad input. Prefer the
@@ -91,10 +92,14 @@ def fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup, original_prima
     originals = {str(path) for path in original_primary_paths}
     implicated_extras = failed - originals
     excluded = implicated_extras or failed
+    affected = {index for index, pool in enumerate(pools)
+                if any(str(path) in failed for path in pool)}
+    for index in affected_films or ():
+        if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(pools):
+            affected.add(index)
     changes = []
-    for index, pool in enumerate(pools):
-        if not any(str(path) in failed for path in pool):
-            continue
+    for index in sorted(affected):
+        pool = pools[index]
         remaining = [path for path in pool if str(path) not in excluded]
         if not remaining:
             raise PipelineError("No alternate verified source remains for the affected title.")
@@ -108,3 +113,45 @@ def fallback_pool_inputs(pools, trailers, shot_sets, shot_lookup, original_prima
         trailers[index] = chosen
         shot_sets[index] = shot_lookup[str(chosen)]
     return bool(changes)
+
+
+def choose_narrated_draft(previous, distance, script, speech, *, prefer_quality=False):
+    """Adopt a complete substantive repair even when its clock is no closer.
+
+    Missing takes still enter the existing same-speaker recovery for an initial
+    draft, but must never overwrite an already complete narration.
+    """
+    expected = {(i, p) for i, section in enumerate(script["sections"])
+                for p in range(len(section["paragraphs"]))}
+    complete = set(speech) == expected and all(path is not None for path in speech.values())
+    if previous is None:
+        return (distance, script, speech), True
+    previous_speech = previous[2]
+    previous_complete = bool(previous_speech) and all(path is not None for path in previous_speech.values())
+    if (complete and prefer_quality) or (
+            (complete or not previous_complete) and distance < previous[0]):
+        return (distance, script, speech), True
+    return previous, False
+
+
+def refresh_stale_plan(selector, chosen, pools, trailers, shot_sets, source_films,
+                       text, action, default_film):
+    """Replan only removed inputs; preserve current clips and cross-title identity."""
+    from .source_pool import primary_fallback_plan
+
+    result = []
+    for shot in chosen:
+        if shot.get("image"):
+            result.append(shot)
+            continue
+        source = str(shot.get("source") or trailers[default_film])
+        film_index = source_films.get(source, shot.get("film_index", default_film))
+        if (not isinstance(film_index, int) or isinstance(film_index, bool)
+                or not 0 <= film_index < len(pools)):
+            raise PipelineError("A planned source has no verified title identity.")
+        if source in {str(path) for path in pools[film_index]}:
+            result.append(shot)
+            continue
+        result.extend(primary_fallback_plan(selector, [{**shot, "film_index": film_index}],
+            trailers, shot_sets, text, action, film_index))
+    return result
