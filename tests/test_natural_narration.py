@@ -34,7 +34,8 @@ def test_general_editor_can_shorten_far_beyond_old_percentage():
     assert result == [short] and labels == ["normal"]
     assert len(short.split()) < len(draft[0].split())*.3
     prompt = writer.ask.call_args.args[0]
-    assert "percentage" in prompt and "no minimum" in prompt
+    assert "not a retention percentage" in prompt
+    assert "Preserve distinct useful story" in prompt and "Do not pad to a word count" in prompt
     assert "fact-check" not in prompt.casefold() and "spoiler" not in prompt.casefold()
 
 
@@ -63,19 +64,38 @@ def test_narration_uses_flexible_story_guidance_instead_of_rotating_templates():
 
 
 @pytest.mark.parametrize("automatic", [True, False])
-def test_auto_has_no_review_word_target_but_selected_minutes_remain_guidance(automatic):
+def test_auto_and_selected_minutes_supply_soft_review_guidance_without_padding(automatic):
     writer = Writer()
     writer.plan = lambda *args: {}
     targets = []
+    short = "Number 1: Example. Two friends lose their car."
     def narration(topic, brief, label, facts, target):
         targets.append(target)
-        return ["Number 1: Example. Two friends lose their car."]
+        return [short]
     writer.narration = narration
     writer.edit = lambda topic, brief, role, facts, paragraphs, **kwargs: (paragraphs, ["normal"])
-    result = writer.write("Top 2", "Casual", [{"title": "Example", "year": 2025}],
+    films = [{"title": "Example", "year": 2025},
+             *[{"title": f"Other {i}", "year": 2025} for i in range(4)]]
+    result = writer.write("Top 5", "Casual", films,
                           target_seconds=300, only={"film-0"}, automatic=automatic)
-    assert targets == [None] if automatic else targets[0] > 0
-    assert result["sections"][0]["automatic_runtime"] is automatic
+    assert len(targets) == 1 and targets[0] > len(short.split())
+    section = result["sections"][0]
+    assert section["automatic_runtime"] is automatic
+    assert section["planning_words"] == targets[0]
+    # The planning amount does not reject or pad a complete, much shorter review.
+    assert section["paragraphs"] == [short]
+
+
+@pytest.mark.parametrize("target", [25, 100, 240])
+def test_narration_accepts_complete_story_below_soft_planning_guidance(target):
+    writer = Writer()
+    short = "Number 1: Example. Two friends lose their car."
+    writer.ask = Mock(return_value={"paragraphs": [short]})
+    assert writer.narration("Top movies", "Casual", "rank 1", {"title": "Example"}, target) == [short]
+    assert writer.ask.call_count == 1
+    prompt = writer.ask.call_args.args[0]
+    assert f"About {target} words is loose planning guidance, never a minimum." in prompt
+    assert "Do not pad short material." in prompt
 
 
 @pytest.mark.parametrize("seconds,expected", [(12, 1.0), (18, 1.18), (7, .9)])
@@ -144,17 +164,25 @@ def test_end_screen_shortens_without_changing_final_hold():
 
 
 
-def test_stale_auto_checkpoint_migrates_without_old_word_quota():
+@pytest.mark.parametrize("saved_guidance,expected", [(None, 25), (180, 180)])
+def test_stale_auto_checkpoint_migrates_with_soft_planning_and_no_padding(saved_guidance, expected):
     writer = Writer()
-    writer.narration = Mock(return_value=["Number 1: Example. Two friends lose their car."])
+    short = "Number 1: Example. Two friends lose their car."
+    writer.narration = Mock(return_value=[short])
     writer.edit = lambda *args, **kwargs: (args[4], ["normal"])
     draft = {"sections": [{"kind": "film", "film": 0, "paragraphs": ["Old review."]}],
              "package": {"script_policy_version": 1}}
+    if saved_guidance is not None:
+        draft["sections"][0]["planning_words"] = saved_guidance
     result = writer.refresh_editorial("Top movies", "Casual",
                                       [{"title": "Example", "year": 2025}], draft, automatic=True)
-    assert result["sections"][0]["automatic_runtime"] is True
-    assert writer.narration.call_args.args[4] is None
+    section = result["sections"][0]
+    assert section["automatic_runtime"] is True
+    assert writer.narration.call_args.args[4] == expected
+    assert len(short.split()) < expected and section["paragraphs"] == [short]
     assert "automatic_runtime" not in draft["sections"][0]
+    assert draft["sections"][0]["paragraphs"] == ["Old review."]
+    assert draft["package"]["script_policy_version"] == 1
 
 
 def test_exceptionally_long_sentence_is_bounded_without_losing_words():
