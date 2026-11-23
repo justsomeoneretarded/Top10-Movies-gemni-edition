@@ -1,23 +1,9 @@
-"""Text-free, channel-quality thumbnails that read as the video's genre at a glance.
+"""Verified, cinematic thumbnail compositions with bounded readability repairs.
 
-The list's genre (from the title, brief and the films' TMDB genres) drives everything:
-- which frames are considered: the AI scene descriptions of every trailer shot are
-  searched for that genre's signature moments (for horror: terrified faces, lurking
-  figures, masks, creatures, blood, darkness), not just the busiest shots;
-- how frames are scored: the local vision model rates how instantly a frame reads as
-  the genre and flags any logo or text; exposure targets suit the genre (horror is dark);
-- the look: a grade per genre (horror: crushed blacks, desaturated cold tones, reds kept,
-  heavy vignette, grain), and the cut-out glow and panel dividers use the genre's colour.
-
-Designs:
-1. Hero: number one's most genre-defining face, cut out over a darkened, blurred scene.
-2. Diagonal panels: the most genre-defining frame from three titles.
-3. Signature frame: the single most genre-defining frame of the list, full bleed.
-4. Service mark: number one with a large streaming-service mark (its real service when
-   listed; a random big service only when no featured film has a recognised listing).
-5. Headline: a two-to-four-word phrase from the title in huge letters beside a face.
-A service badge appears only when number one is listed on a recognised service.
-Text is off unless THUMBNAIL_TEXT=minimal.
+Options 1 and 2 retain their established hero/panel composition. Alternatives
+compare actual source crops for phone readability, preserved faces and diversity.
+Photo discovery is independently sourced; exact-title publicity stills are an
+explicit fallback. No model score claims to predict click-through performance.
 """
 from __future__ import annotations
 
@@ -866,6 +852,122 @@ class _Picker:
         return candidate
 
 
+
+def _visual_signature(image: Image.Image) -> np.ndarray:
+    return np.asarray(image.convert("RGB").resize((32, 18)), dtype=np.float32)
+
+
+def _same_picture(a: Image.Image, b: Image.Image) -> bool:
+    """Hash plus pixels avoids treating different flat/dark pictures as identical."""
+    return ((_dhash(a) ^ _dhash(b)).bit_count() <= 8
+            and float(np.abs(_visual_signature(a) - _visual_signature(b)).mean()) < 13)
+
+
+def _crop_retention(candidate: Candidate, face_height: float, face_x: float,
+                    width: int = WIDTH, height: int = HEIGHT) -> float:
+    """How much of the known face box survives the proposed, bounded crop."""
+    if candidate.face is None:
+        return 1.0
+    x, y, w, h = candidate.face
+    cover = max(width / candidate.image.width, height / candidate.image.height)
+    scale = max(cover, min(max(cover, 1.6), face_height * height / max(h, 1)))
+    out_width, out_height = round(candidate.image.width * scale), round(candidate.image.height * scale)
+    cx, cy = (x + w / 2) * scale, (y + h / 2) * scale
+    left = int(min(max(0, cx - width * face_x), out_width - width))
+    top = int(min(max(0, cy - height * .40), out_height - height))
+    kept_width = max(0, min((x + w) * scale, left + width) - max(x * scale, left))
+    kept_height = max(0, min((y + h) * scale, top + height) - max(y * scale, top))
+    return min(1.0, kept_width * kept_height / max(1, w * h * scale * scale))
+
+
+def _candidate_readability(candidate: Candidate) -> float:
+    face = 1.1 if good_face(candidate) else .45 if candidate.face is not None else 0
+    contrast = min(phone_check(candidate.image) / 55, 1.3)
+    sharpness = min(frame_sharpness(candidate.image) / 350, 1.0)
+    return max(-2, min(12, candidate.score)) / 3 + face + contrast + sharpness * .45
+
+
+def _composition_score(image: Image.Image, chosen: list[Candidate], used: list[Candidate],
+                       previous: list[Image.Image], *, retention: float = 1.0) -> tuple[float, dict]:
+    contrast = phone_check(image)
+    detail = min(frame_sharpness(image) / 300, 1.0)
+    repeated = sum(any(_same_picture(c.image, old.image) for old in used) for c in chosen)
+    duplicates = sum(_same_picture(image, old) for old in previous)
+    film_use = sum(sum(c.film == old.film for old in used) for c in chosen) / max(1, len(chosen))
+    source_quality = sum(_candidate_readability(c) for c in chosen) / max(1, len(chosen))
+    value = (source_quality + min(contrast / 50, 1.5) + detail * .6 + retention
+             - repeated * 3.2 - duplicates * 5.0 - film_use * .35
+             - max(0, .92 - retention) * 6)
+    return value, {"phone_contrast": round(contrast, 2), "detail": round(detail, 3),
+                   "face_retention": round(retention, 3), "reused_source_images": repeated,
+                   "near_duplicate_designs": duplicates, "local_selection_score": round(value, 3)}
+
+
+def _alternative_design(pool: list[Candidate], used: list[Candidate],
+                        previous: list[Image.Image], number: int, profile: dict,
+                        grade: str, *, paired: bool = False):
+    """Compare a bounded set of real-source compositions; never invent a subject.
+
+    This measures local readability/diversity, not click-through performance.
+    """
+    if not pool:
+        raise ValueError("No verified image candidate")
+    rank_values = {}
+    metric_failures = 0
+    for candidate in pool:
+        try:
+            repeats = sum(_same_picture(candidate.image, old.image) for old in used)
+            film_use = sum(candidate.film == old.film for old in used)
+            rank_values[id(candidate)] = _candidate_readability(candidate) - repeats * 3.2 - film_use * .35
+        except (OSError, ValueError, RuntimeError, cv2.error):
+            rank_values[id(candidate)] = -10.0
+            metric_failures += 1
+    # Source metrics are evaluated once per design, not again in each pair's sort.
+    def rank(candidate):
+        return rank_values[id(candidate)]
+    leads = sorted(pool, key=rank, reverse=True)[:4]
+    best = None
+    attempts = 0
+    failures = 0
+    initial_score = None
+    for lead in leads:
+        others = sorted((c for c in pool if c.film != lead.film
+                         and not _same_picture(c.image, lead.image)), key=rank, reverse=True)
+        combinations = [[lead, other] for other in others[:2]] if paired and others else [[lead]]
+        for chosen in combinations:
+            variants = ((.43, .5), (.49, .40 if number % 2 else .60)) if len(chosen) == 1 else ((.42, .5),)
+            for face_height, face_x in variants:
+                attempts += 1
+                try:
+                    if len(chosen) > 1:
+                        canvas = panels(chosen, profile["divider"])
+                        panel_width = round(WIDTH / len(chosen)) + 180
+                        retention = min(_crop_retention(c, .42, .5, panel_width, HEIGHT) for c in chosen)
+                    else:
+                        canvas = face_crop(lead, face_height=face_height, face_x=face_x)
+                        retention = _crop_retention(lead, face_height, face_x)
+                    canvas = finish(canvas, grade)
+                    score, metrics = _composition_score(canvas, chosen, used, previous, retention=retention)
+                    if initial_score is None:
+                        initial_score = score
+                    if best is None or score > best[0]:
+                        best = (score, canvas, chosen, metrics, {"face_height": face_height, "face_x": face_x})
+                except (OSError, ValueError, RuntimeError, cv2.error):
+                    failures += 1
+    if best is None:
+        # Preserve delivery when optional composition assessment is unavailable.
+        lead = leads[0]
+        canvas = finish(face_crop(lead, face_height=.43, face_x=.5), grade)
+        return canvas, [lead], {"status": "fallback", "attempts": attempts,
+                               "failed_variants": failures, "metric_failures": metric_failures,
+                               "reason": "optional_local_assessment_unavailable"}
+    _, canvas, chosen, metrics, crop = best
+    return canvas, chosen, {"status": "selected", "attempts": attempts,
+                           "failed_variants": failures, "metric_failures": metric_failures, "metrics": metrics,
+                           "crop": crop, "improved_over_first": initial_score is not None and best[0] > initial_score + .001,
+                           "basis": "bounded local readability and diversity; not a CTR prediction"}
+
+
 def build(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]], phrases: list[str],
           output: Path, work: Path, title: str | None = None, brief: str | None = None) -> list[dict]:
     work.mkdir(parents=True, exist_ok=True)
@@ -891,6 +993,7 @@ def build(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]], 
             candidate.image.convert("RGB").save(folder / f"{rank:02}-{name}-{candidate.source}.jpg", quality=92)
     picker = _Picker(candidates)
     report = []
+    rendered_images = []
     grade = profile["grade"]
 
     def save_design(number: int, image: Image.Image, style: str, chosen: list[Candidate], **extra):
@@ -900,9 +1003,11 @@ def build(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]], 
                   "comedy":"#f4ba32", "romance":"#db6686", "scifi":"#339db9"}.get(explicit_genre(title, brief), "#d92935")
         ImageDraw.Draw(image).rectangle((2,2,image.width-3,image.height-3), outline=accent, width=5)
         save(image, output / f"thumbnail-{number:02}.jpg")
+        rendered_images.append(image.copy())
         report.append({"file": f"thumbnail-{number:02}.jpg", "style": style,
                        "films": [films[c.film]["title"] for c in chosen], "sources": [c.source for c in chosen],
-                       "faces": [c.notes.get("face_quality") for c in chosen], **extra})
+                       "faces": [c.notes.get("face_quality") for c in chosen],
+                       "source_records": [{k:v for k,v in c.notes.items() if k != "hash"} for c in chosen], **extra})
 
     def one_per_film(count: int, faces: bool = True) -> list[Candidate]:
         """The best unused picture from each of ``count`` different titles, number one first."""
@@ -933,57 +1038,56 @@ def build(films: list[dict], trailers: list[Path], shot_sets: list[list[dict]], 
         single = picker.take(picker.any(faces=True))
         save_design(2, finish(face_crop(single, face_height=0.5, face_x=0.42), grade), "face", [single])
 
-    # 3-5: image-led alternatives to the hero/split compositions. No compulsory
-    # service badges, countdown typography or action bias for an unthemed list.
-    for number in (3,4,5):
-        free=picker.free(faces=True) or picker.free() or picker.candidates
-        lead=picker.take(free[0])
-        if number == 4:
-            other=next((c for c in picker.free(faces=True) if c.film != lead.film),None)
-            if other is not None:
-                picker.take(other)
-                save_design(number,finish(panels([lead,other],profile["divider"]),grade),"duo",[lead,other])
-                continue
-        save_design(number,finish(face_crop(lead,face_height=.48,
-                    face_x=.56 if number==3 else .45),grade),"editorial-hero",[lead])
+    # 3-5: compare source choices and safe crops instead of taking the next
+    # high-scoring image blindly. Options 1/2 above are deliberately unchanged.
+    quality_repairs = []
+    for number in (3, 4, 5):
+        image, chosen, assessment = _alternative_design(
+            picker.candidates, picker.used, rendered_images, number, profile, grade,
+            paired=number == 4)
+        for candidate in chosen:
+            picker.take(candidate)
+        style = "duo" if len(chosen) > 1 else "editorial-hero"
+        save_design(number, image, style, chosen, quality_review=assessment)
+        quality_repairs.append({"file": f"thumbnail-{number:02}.jpg", **assessment})
 
-    # 6-10: independently discovered photos, never extracted trailer frames.
+    # 6-10: only independently downloaded photos or verified publicity stills.
     from .image_discovery import gather_photos
-    photos,provenance=gather_photos(films,work/"image-search")
-    photo_picker=_Picker(photos) if photos else None
-    for number in range(6,11):
-        if photo_picker is not None:
-            available=photo_picker.free(faces=True) or photo_picker.free()
-            if available:
-                lead=available[0]
-            else:
-                lead=min(photo_picker.candidates,key=lambda candidate:sum(_similar(candidate,u) for u in photo_picker.used))
-            photo_picker.take(lead)
-            other=next((c for c in photo_picker.free() if c.film != lead.film),None)
-            if number in (7,9) and other is not None:
-                photo_picker.take(other)
-                canvas=panels([lead,other],profile["divider"]);chosen=[lead,other]
-            else:
-                canvas=face_crop(lead,face_height=.48,face_x=.38 if number%2 else .64)
-                chosen=[lead]
-            save_design(number,finish(canvas,grade),"searched-photo",chosen,
-                        photo_sources=[{k:v for k,v in c.notes.items() if k!="hash"} for c in chosen])
+    photos, provenance = gather_photos(films, work / "image-search")
+    photo_used = []
+    # Diversity considers sources already shown in 1–5 too. A repeated source is
+    # permitted when the verified pool is small, but exact repeated designs lose.
+    for number in range(6, 11):
+        if photos:
+            image, chosen, assessment = _alternative_design(
+                photos, [*picker.used, *photo_used], rendered_images, number,
+                profile, grade, paired=number in (7, 9))
+            photo_used.extend(chosen)
+            save_design(number, image, "searched-photo", chosen,
+                        photo_sources=[{k:v for k,v in c.notes.items() if k != "hash"} for c in chosen],
+                        photo_route=sorted({c.source for c in chosen}), quality_review=assessment)
+            quality_repairs.append({"file": f"thumbnail-{number:02}.jpg", **assessment})
         else:
-            # Last resort is an honest typographic design, never fabricated actors.
-            canvas=Image.new("RGB",(WIDTH,HEIGHT),"#101116")
-            draw=ImageDraw.Draw(canvas)
-            face=brand_font("display",72)
-            draw.text((WIDTH/2,HEIGHT*.38),"MOVIE RANKS",font=face,anchor="mm",fill="white")
-            short=" ".join(title.split()[:7])
-            draw.text((WIDTH/2,HEIGHT*.6),short,font=brand_font("body-medium",30),
-                      anchor="mm",fill="#f1c968")
-            save_design(number,canvas,"typographic-fallback",[],
+            canvas = Image.new("RGB", (WIDTH, HEIGHT), "#101116")
+            draw = ImageDraw.Draw(canvas)
+            draw.text((WIDTH/2, HEIGHT*.38), "MOVIE RANKS", font=brand_font("display", 72),
+                      anchor="mm", fill="white")
+            draw.text((WIDTH/2, HEIGHT*.6), " ".join(title.split()[:7]),
+                      font=brand_font("body-medium", 30), anchor="mm", fill="#f1c968")
+            save_design(number, canvas, "typographic-fallback", [],
                         fallback_reason="No verified photo available; no video frames used")
-    save_json(output/"thumbnail-sources.json",{"image_search":provenance,"designs":report})
+    discovery = {}
+    try:
+        import json
+        discovery = json.loads((work / "image-search" / "image-discovery-report.json").read_text())
+    except (OSError, ValueError):
+        discovery = {"status": "report_unavailable", "provenance_count": len(provenance)}
+    save_json(output/"thumbnail-sources.json",{"image_search":provenance,"discovery":discovery,
+              "quality_repairs":quality_repairs,"designs":report})
 
     save_json(work / "thumbnail-report.json", {"genre": genre, "vision_rated": rated, "candidates": len(candidates),
               "good_faces": sum(good_face(c) for c in candidates),
-              "thumbnails": report,
+              "thumbnails": report, "quality_repairs": quality_repairs, "discovery": discovery,
               "pool": [{"film": films[c.film]["title"], "source": c.source, **{k: v for k, v in c.notes.items() if k != "hash"}}
                        for c in picker.candidates]})
     print(f"Studio thumbnails ({genre}): {', '.join(item['style'] for item in report)}; "

@@ -24,6 +24,7 @@ from movie_pipeline import (
     secondary_footage,
     shots,
     speech_recovery,
+    video_settings,
     voice,
 )
 from movie_pipeline.core import PipelineError, key, save_json, write_srt
@@ -79,6 +80,10 @@ def assert_rank_introduction_sequence(events, chapters, cues, speed, count):
     (2,"false",2160,(1920,1080),"title-cards","Movies","Warguy"),
     (2,"false",2160,(1920,1080),"title-card-fails","Movies","Warguy"),
     (2,"false",2160,(1920,1080),"fallback-beats","Movies","Warguy"),
+    # With one HD title out of two after fallback, the 60% native-HD majority
+    # is not met: keep the 720p title native rather than upscaling the whole list.
+    (2,"true",720,(1280,720),"promoted-index-fails","Movies","Warguy"),
+    (2,"true",2160,(3840,2160),"stale-preview-after-opening-failure","Movies","Warguy"),
 ])
 def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp_path, capsys, count, try_4k, source_height, expected_size, extra_mode, content_type, narrator):
     monkeypatch.chdir(tmp_path)
@@ -210,7 +215,12 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
             assert existing is not None
         records["footage_order"].append(("secondary" if slot == 2 else f"extra-{slot}", film["id"]))
         records['extra_attempts'] = records.get('extra_attempts', 0)+1
-        assert minimum_size == expected_size
+        # Discovery follows this film's incumbent detail, capped at 1080p;
+        # it is independent of the final canvas chosen from all accepted pools.
+        native_height = source_height if film["id"] == 1 else 2160
+        assert minimum_size == video_settings.SIZES[min(native_height, 1080)]
+        if extra_mode in {'promoted-index-fails', 'stale-preview-after-opening-failure'} and (slot >= 3 or film['id'] != 1):
+            return None  # one accepted extra makes the affected source unambiguous
         if extra_mode == 'render-fails' and slot >= 3:
             return None  # exercise failed second decoding with a missing third
         if extra_mode == 'raises':
@@ -246,6 +256,9 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
                 if not records.get('shared_regenerations'):
                     return [{'start': 0, 'end': durations[str(audio)], 'text': 'Missing the expected availability sentence.'}]
             return [{"start": 0, "end": durations[str(audio)], "text": text_for_audio[str(audio)]}]
+        records.setdefault('trailer_transcriptions', []).append(str(audio))
+        if extra_mode == 'promoted-index-fails' and Path(audio).name == 'movie-1.mp4':
+            return [{"start": 50, "end": 52.9, "text": "The original source has its own complete sentence."}]
         return [{"start": 30, "end": 32.9, "text": "We have to leave right now"}]
 
     class FakeSelector:
@@ -253,7 +266,11 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
             self.people = {}
 
         def index(self, path, choices):
-            pass
+            records.setdefault('indexed_sources', []).append(str(path))
+            if extra_mode == 'promoted-index-fails' and Path(path).name == 'movie-1-extra.mp4':
+                records.setdefault('index_failures', []).append(str(path))
+                records['canvas_before_index_fallback'] = export_size()
+                raise PipelineError('Promoted optional source cannot be indexed')
 
         def hook_score(self, path, choices, text, action):
             return .5
@@ -284,6 +301,9 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
         make(target, durations[str(audio)])
 
     def trailer_video(source, start, seconds, target, **kwargs):
+        if extra_mode == 'stale-preview-after-opening-failure' and Path(source).name == 'movie-1-extra.mp4':
+            records.setdefault('removed_source_render_attempts', []).append(str(source))
+            raise PipelineError('This optional source fails during the opening')
         records.setdefault('trailer_renders', []).append({
             'source': str(source), 'start': start, 'duration': seconds,
             'target': str(target), **kwargs,
@@ -405,7 +425,25 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
         records.setdefault('rank_labels', []).append({'title': title, 'rank': rank, 'year': year})
         path.write_bytes(b'label')
 
-    monkeypatch.setattr(cli, 'inspect_sources', lambda paths: [{"file": p.name, "width": round((source_height if i==0 else 2160)*16/9), "height": source_height if i==0 else 2160} for i,p in enumerate(paths)])
+    def source_probe(path):
+        # Every metadata consumer sees the same actual file dimensions. In
+        # particular, inspecting one film's extras must not turn its HD primary
+        # into 4K just because it moved to a different position in a list.
+        film_id = int(Path(path).stem.split("-")[1])
+        native_height = source_height if film_id == 1 else 2160
+        if extra_mode == 'promoted-index-fails' and Path(path).name == 'movie-1-extra.mp4':
+            native_height = 2160
+        return {"streams": [{"codec_type": "video",
+                             "width": round(native_height * 16 / 9),
+                             "height": native_height}]}
+
+    # Exercise real inspection, discovery, promotion and export policy together;
+    # only decoding is faked because these fixture files contain test bytes.
+    monkeypatch.setattr(video_settings, "probe", source_probe)
+    monkeypatch.setattr("movie_pipeline.quality_repair.repair_visual_parts",
+                        lambda *args, **kwargs: {"repaired": [], "advisories": []})
+    monkeypatch.setattr("movie_pipeline.quality_repair.inspect_visual_export",
+                        lambda *args, **kwargs: {"repairable_parts": []})
     monkeypatch.setattr(cli, 'voice_reference', reference_for)
     monkeypatch.setattr(cli, 'duration', lambda path: durations[str(path)])
     monkeypatch.setattr(speech_recovery, 'duration', lambda path: durations[str(path)])
@@ -448,7 +486,13 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
     if extra_mode == "fallback-beats":
         monkeypatch.setattr(cli, "choose_beat", lambda *args, **kwargs: {"start": 30.0, "end": 32.9})
         monkeypatch.setattr("movie_pipeline.dialogue.isolate_dialogue", lambda *args, **kwargs: None)
-    if extra_mode == "native-scenes":
+    if extra_mode == "promoted-index-fails":
+        def inspect_post_index_plan(selector, pools, lookup, films, sections, speech, dialogue, recognizer, work):
+            records["post_index_dialogue"] = copy.deepcopy(dialogue)
+            records["post_index_pools"] = copy.deepcopy(pools)
+            return None
+        monkeypatch.setattr("movie_pipeline.moments.plan_episode", inspect_post_index_plan)
+    if extra_mode in {"native-scenes", "stale-preview-after-opening-failure"}:
         def native_plan(selector,pools,lookup,films,sections,speech,dialogue,recognizer,work):
             def clip(source,start,seconds,film_index):
                 return {"source":str(source),"start":start,"duration":seconds,
@@ -458,11 +502,18 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
             for i,section in enumerate(sections):
                 if section["kind"]=="film":
                     index=section["film"]
-                    assert len(pools[index])==5
-                    previews[i]=clip(pools[index][4],60,8,index)
+                    if extra_mode == "native-scenes":
+                        assert len(pools[index])==5
+                        previews[i]=clip(pools[index][4],60,8,index)
+                        inserts[i]={1:clip(pools[index][3],90,8,index)}
+                    else:
+                        source = pools[index][1] if index == 0 else pools[index][0]
+                        previews[i] = clip(source,60,5,index)
+                        if index == 0:
+                            inserts[i] = {1:clip(source,90,8,index)}
                     assert section.get("rank_intro_version") == 1
-                    inserts[i]={1:clip(pools[index][3],90,8,index)}
-            return {"opening":[clip(pools[0][2],20,5,0)],"previews":previews,"inserts":inserts,"report":{}}
+            opening_source = pools[0][2] if extra_mode == "native-scenes" else pools[0][1]
+            return {"opening":[clip(opening_source,20,5,0)],"previews":previews,"inserts":inserts,"report":{}}
         monkeypatch.setattr("movie_pipeline.moments.plan_episode",native_plan)
     monkeypatch.setattr(render, 'thumbnails', thumbnails)
     monkeypatch.setattr("movie_pipeline.branding.render_ident", lambda target, work: (make(target, 2.3), 2.3)[1])
@@ -506,6 +557,58 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
         cli.validate_package.assert_not_called()
         return
     cli.produce(*arguments)
+    if extra_mode in {"promoted-index-fails", "stale-preview-after-opening-failure"}:
+        timeline_path = next((tmp_path / "jobs").glob("*/timeline.json"))
+        timeline = json.loads(timeline_path.read_text())
+        events = timeline["events"]
+        quality = json.loads((timeline_path.parent / "quality-report.json").read_text())
+        original = str(Path("work/footage/movie-1.mp4"))
+        failed = str(Path("work/footage/movie-1-extra.mp4"))
+        assert records["export_audio_review"]["events"] == events
+        assert json.loads((output / "audio-review.json").read_text())["accepted"] is True
+        records["export_recovery_close"].assert_called_once_with()
+        assert records["narrator"] == "warguy"
+        assert_rank_introduction_sequence(events, embedded, written_cues, timeline["speed"], count)
+        assert embedded == timeline["chapters"] and embedded[0]["start"] == 0
+        assert all(a["end"] <= b["start"]+.001 for a, b in pairwise(written_cues))
+        assert set(render_sizes) == {expected_size}
+        assert (quality["export_width"], quality["export_height"]) == expected_size
+        assert not any(row["file"] == Path(failed).name for row in quality["sources"])
+        assert len(quality["sources"]) == count
+        assert all("-extra" not in shot.get("source", "")
+                   for event in events for shot in event.get("shots", []))
+        for event in events:
+            if event.get("film") in {"Movie 1", "Movie 2"}:
+                for shot in event.get("shots", []):
+                    if not shot.get("image"):
+                        film_id = int(Path(shot["source"]).stem.split("-")[1])
+                        assert event["film"] == f"Movie {film_id}"
+        if extra_mode == "promoted-index-fails":
+            assert records["index_failures"] == [failed]
+            assert records["indexed_sources"][:2] == [failed, original]
+            assert records["canvas_before_index_fallback"] == (3840, 2160)
+            assert records["trailer_transcriptions"] == [
+                failed, str(Path("work/footage/movie-2.mp4")), original]
+            assert records["post_index_pools"][0] == [Path(original)]
+            assert records["post_index_dialogue"][original] == [{
+                "start": 50, "end": 52.9,
+                "text": "The original source has its own complete sentence."}]
+            assert failed not in records["post_index_dialogue"]
+            assert quality["source_quality"]["export_height"] == 720
+        else:
+            assert records["removed_source_render_attempts"] == [failed]
+            review = next(e for e in events if e["type"] == "review-preview" and e["film"] == "Movie 1")
+            assert review["shots"][0]["source"] == original
+            assert records["review_previews"].count(original) == 2
+            assert not [e for e in events if e["type"] == "trailer-audio"]
+            assert sum(e["duration"] for e in events if e["type"] == "cold-open") == pytest.approx(5)
+            assert not any(cue["text"] == "A complete scene sentence."
+                           for cue in written_cues if cue["start"] > review["start"]/timeline["speed"])
+        assert records["writes"] == 1
+        assert records["extra_attempts"] == count*4
+        assert (output / "subtitles.srt").exists()
+        assert len(list(output.glob("thumbnail-*.jpg"))) == 10
+        return
     if extra_mode == "native-scenes":
         timeline=json.loads(next((tmp_path/"jobs").glob("*/timeline.json")).read_text())
         events=timeline["events"]
@@ -590,6 +693,16 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
     quality_report = json.loads(next((tmp_path / "jobs").glob("*/quality-report.json")).read_text())
     assert quality_report["try_4k"] == (try_4k == "true")
     assert (quality_report["export_width"], quality_report["export_height"]) == expected_size
+    source_quality = quality_report["source_quality"]
+    assert not source_quality["unknown_sources"]
+    assert (source_quality["export_width"], source_quality["export_height"]) == expected_size
+    for details in source_quality["sources"]:
+        native_height = source_height if details["film_index"] == 0 else 2160
+        assert details["height"] == native_height
+        assert details["width"] == round(native_height * 16 / 9)
+        factor = max(expected_size[0] / details["width"], expected_size[1] / native_height)
+        assert details["upscale_factor"] == pytest.approx(round(max(1, factor), 4))
+        assert details["below_canvas"] is (factor > 1.001)
     assert records['cta_render']['plan']['animated'] is True
     assert records['cta_render']['plan']['path'].endswith('.gif')
     assert len(records['review_previews']) == count
@@ -720,6 +833,54 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
         with Image.open(output / f'thumbnail-{i:02}.jpg') as thumbnail:
             assert thumbnail.size == (1280, 720)
     assert not list(timeline_file.parent.glob('part-*.mp4'))
+
+
+@pytest.mark.parametrize("primary_heights,extra_heights,ceiling,expected_size", [
+    ([360, 360], [1080, 1080], 2160, (1920, 1080)),
+    ([360, 360], [None, None], 2160, (640, 360)),
+    ([360, 360], [None, None], 1080, (1920, 1080)),
+    ([1080, 2160, 2160, 2160, 2160], [None] * 5, 2160, (2560, 1440)),
+    ([720, 2160, 2160, 2160, 2160], [None] * 5, 2160, (1920, 1080)),
+])
+def test_pool_discovery_promotion_and_export_share_actual_source_metadata(
+        monkeypatch, tmp_path, primary_heights, extra_heights, ceiling, expected_size):
+    """Discovery admits upgrades; export reflects the best accepted copy per title."""
+    from movie_pipeline.source_pool import promote_source_pool
+
+    heights = {}
+    pools = []
+    for film_id, (primary_height, extra_height) in enumerate(zip(primary_heights, extra_heights), 1):
+        primary = tmp_path / f"movie-{film_id}.mp4"
+        primary.write_bytes(b"primary test bytes")
+        heights[primary] = primary_height
+        pool = [primary]
+        if extra_height is not None:
+            extra = tmp_path / f"movie-{film_id}-extra.mp4"
+            extra.write_bytes(b"accepted higher-resolution test bytes")
+            heights[extra] = extra_height
+            pool.append(extra)
+        pools.append(pool)
+
+    def probe_source(path):
+        height = heights[Path(path)]
+        return {"streams": [{"codec_type": "video", "width": round(height * 16 / 9), "height": height}]}
+
+    monkeypatch.setattr(video_settings, "probe", probe_source)
+    for pool, height in zip(pools, primary_heights):
+        assert video_settings.discovery_size(pool[0], ceiling) == video_settings.SIZES[min(height, 1080)]
+    promoted = [promote_source_pool(pool, ceiling=ceiling) for pool in pools]
+    for before, after in zip(pools, promoted):
+        assert set(after) == set(before)  # promotion never moves footage between titles
+        assert after[0] == max(before, key=lambda path: heights[path])
+    assert video_settings.choose_export_from_pools(promoted, ceiling) == expected_size
+    report = video_settings.source_quality_report(promoted, expected_size)
+    assert not report["unknown_sources"]
+    assert len(report["sources"]) == sum(map(len, pools))
+    for index, pool in enumerate(promoted):
+        primary_row = next(row for row in report["sources"]
+                           if row["film_index"] == index and row["role"] == "primary")
+        assert primary_row["file"] == pool[0].name
+        assert primary_row["height"] == heights[pool[0]]
 
 
 @pytest.mark.parametrize('seconds', [8.5, 10.0, 12.0])

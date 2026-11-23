@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import io
@@ -55,9 +57,63 @@ class _Budget:
     blocked: str = ""
     blocked_models: dict = field(default_factory=dict)
     cooldown: dict = field(default_factory=dict)  # block key -> time a temporary block ends
+    circuit_failures: dict = field(default_factory=dict)
+    video_requests: int = 0
+    discovery_requests: int = 0
+    discovery_video_seconds: float = 0.0
+    successful_video_seconds: float = 0.0
+    discovery_successful_video_seconds: float = 0.0
 
 
 _BUDGET = _Budget()
+_VIDEO_PHASE = ContextVar("gemini_video_phase", default="accepted")
+DISCOVERY_SHARE = 0.2
+
+
+@contextmanager
+def video_scope(phase):
+    """Classify video work without changing public request signatures or thread state."""
+    if phase not in {"discovery", "accepted"}:
+        raise ValueError("Unknown video-analysis phase")
+    token = _VIDEO_PHASE.set(phase)
+    try:
+        yield
+    finally:
+        _VIDEO_PHASE.reset(token)
+
+
+def _circuit_key(model, stage, video_seconds):
+    # Frame/image service errors should not also suppress independent writing.
+    return model + ("#video" if video_seconds else "#vision" if stage == "vision" else "")
+
+
+def _pause_circuit(block, reason):
+    """One bounded probe per cooldown; repeated outages get a longer quiet period."""
+    failures = min(6, _BUDGET.circuit_failures.get(block, 0) + 1)
+    _BUDGET.circuit_failures[block] = failures
+    delay = min(_number("GEMINI_CIRCUIT_MAX_SECONDS", 900, 90, 3600),
+                TEMPORARY_BLOCK_SECONDS * 2 ** (failures - 1))
+    _BUDGET.blocked_models[block] = reason
+    _BUDGET.cooldown[block] = time.monotonic() + delay
+    record_event("provider", "gemini", "cooldown", reason,
+                 details={"circuit_failures": failures, "cooldown_seconds": delay})
+
+
+def budget_snapshot():
+    """Safe diagnostics: attempts remain charged even when generation fails."""
+    with _BUDGET.lock:
+        return {"requests": _BUDGET.requests, "request_limit": int(_number("GEMINI_MAX_REQUESTS", 120, 1, 1000)),
+                "attempted_video_seconds": round(_BUDGET.video_seconds, 3),
+                "video_seconds_limit": _number("GEMINI_MAX_VIDEO_SECONDS", 6000, 1, 28800),
+                "video_requests": _BUDGET.video_requests,
+                "discovery_requests": _BUDGET.discovery_requests,
+                "discovery_attempted_video_seconds": round(_BUDGET.discovery_video_seconds, 3),
+                "successful_video_seconds": round(_BUDGET.successful_video_seconds, 3),
+                "discovery_successful_video_seconds": round(_BUDGET.discovery_successful_video_seconds, 3),
+                "accepted_successful_video_seconds": round(
+                    _BUDGET.successful_video_seconds - _BUDGET.discovery_successful_video_seconds, 3),
+                "discovery_share": DISCOVERY_SHARE,
+                "active_circuits": sum(end > time.monotonic() for end in _BUDGET.cooldown.values())}
 
 
 def _keys() -> list[str]:
@@ -84,6 +140,7 @@ def _switch_key(reason: str) -> bool:
     _BUDGET.blocked = ""
     _BUDGET.blocked_models.clear()
     _BUDGET.cooldown.clear()
+    _BUDGET.circuit_failures.clear()
     record_event("provider", "gemini", "key_switch", reason[:40], details={"key_number": _KEY_INDEX[0] + 1})
     print(f"Gemini key {_KEY_INDEX[0]} {reason.split(' ')[0]}; switching to key {_KEY_INDEX[0] + 1}.", flush=True)
     return True
@@ -382,16 +439,16 @@ class GeminiClient:
         retries = int(_number("GEMINI_MAX_RETRIES", 1, 0, 2))
         max_wait = 30
         if video_seconds:
-            # Video requests are large: when Google asks us to wait for the per-minute limit to reset
-            # (often 40-60 s), wait and retry instead of giving up on the video.
-            retries, max_wait = max(retries, 3), 90
+            # Every failed video attempt still consumes the hard exposure budget.
+            # Do not spend four full-video attempts on a known busy service.
+            retries, max_wait = int(_number("GEMINI_VIDEO_RETRIES", 0, 0, 1)), 90
         else:
             # Writing is the most valuable request of a run: a busy server gets several patient retries.
             retries, max_wait = max(retries, int(_number("GEMINI_TEXT_RETRIES", 3, 0, 5))), 60
         timeout = (10, _number("GEMINI_TIMEOUT_SECONDS", 120, 10, 180))
         # Video and writing are blocked separately: a model that is too busy to watch trailers
         # must never take the script down with it.
-        block = model + ("#video" if video_seconds else "")
+        block = _circuit_key(model, stage, video_seconds)
         with _BUDGET.lock:
             if block in _BUDGET.cooldown and time.monotonic() >= _BUDGET.cooldown[block]:
                 # A busy or slow server is temporary: try the model again after a short pause.
@@ -408,11 +465,25 @@ class GeminiClient:
                     raise _unavailable("video_budget_exhausted")
                 if _BUDGET.video_seconds + video_seconds > _number("GEMINI_MAX_VIDEO_SECONDS", 6000, 1, 28800):
                     raise _unavailable("video_budget_exhausted")
+                discovery = bool(video_seconds and _VIDEO_PHASE.get() == "discovery")
+                if discovery:
+                    # Source previews are optional. Preserve at least 80% of video
+                    # attempt capacity for accepted files and each title's primary.
+                    exposure_limit = _number("GEMINI_MAX_VIDEO_SECONDS", 6000, 1, 28800)
+                    video_request_limit = 0.6 * int(_number("GEMINI_MAX_REQUESTS", 120, 1, 1000))
+                    if (_BUDGET.discovery_video_seconds + video_seconds > DISCOVERY_SHARE * exposure_limit
+                            or _BUDGET.discovery_requests >= int(DISCOVERY_SHARE * video_request_limit)):
+                        raise _unavailable("discovery_video_budget_exhausted")
                 delay = max(0.0, _BUDGET.next_request - time.monotonic())
                 if delay:
                     time.sleep(min(delay, 30))
                 _BUDGET.requests += 1
                 _BUDGET.video_seconds += video_seconds
+                if video_seconds:
+                    _BUDGET.video_requests += 1
+                if discovery:
+                    _BUDGET.discovery_requests += 1
+                    _BUDGET.discovery_video_seconds += video_seconds
                 _BUDGET.next_request = time.monotonic() + _number("GEMINI_MIN_INTERVAL_SECONDS", 12, 0, 30)
                 started = time.monotonic()
                 try:
@@ -434,11 +505,9 @@ class GeminiClient:
                         continue
                     if isinstance(error, requests.ReadTimeout):
                         # A slow model is not evidence that other models are offline.
-                        _BUDGET.blocked_models[block] = "model_read_timeout"
-                        _BUDGET.cooldown[block] = time.monotonic() + TEMPORARY_BLOCK_SECONDS
+                        _pause_circuit(block, "model_read_timeout")
                         raise _unavailable("model_read_timeout") from None
-                    _BUDGET.blocked_models[block] = "transport_unavailable"
-                    _BUDGET.cooldown[block] = time.monotonic() + TEMPORARY_BLOCK_SECONDS
+                    _pause_circuit(block, "transport_unavailable")
                     raise _unavailable("transport_unavailable") from None
                 try:
                     data = response.json()
@@ -448,6 +517,7 @@ class GeminiClient:
                     data = {}
                 status = response.status_code
                 if status == 200 and data and "error" not in data:
+                    _BUDGET.circuit_failures.pop(block, None)
                     usage = data.get("usageMetadata", {})
                     details = {"model": model, "http_status": status, "attempt": attempt + 1,
                                "request_count": _BUDGET.requests, "video_seconds": _BUDGET.video_seconds}
@@ -484,8 +554,7 @@ class GeminiClient:
                         continue
                 if transient:
                     reason = "quota_exhausted" if status == 429 else "service_unavailable"
-                    _BUDGET.blocked_models[block] = reason
-                    _BUDGET.cooldown[block] = time.monotonic() + TEMPORARY_BLOCK_SECONDS
+                    _pause_circuit(block, reason)
                     raise _unavailable(reason)
                 # Google's text is never stored; only its error code and which known problem words it mentions.
                 error = data.get("error") if isinstance(data.get("error"), dict) else {}
@@ -581,7 +650,13 @@ class GeminiClient:
             valid = False
         if not valid:
             raise _unavailable("invalid_or_incomplete_json")
-        record_event(stage, "gemini", "success", details={"model": model})
+        if video_seconds:
+            with _BUDGET.lock:
+                _BUDGET.successful_video_seconds += video_seconds
+                if _VIDEO_PHASE.get() == "discovery":
+                    _BUDGET.discovery_successful_video_seconds += video_seconds
+        record_event(stage, "gemini", "success", details={"model": model,
+                     "successful_video_seconds": _BUDGET.successful_video_seconds})
         return value
 
     def grounded_text(self, prompt):

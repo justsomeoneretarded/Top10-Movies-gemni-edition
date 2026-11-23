@@ -1,4 +1,4 @@
-"""Provisional resource/word planning; Auto never dictates finished duration."""
+"""Soft resource and story-depth planning; finished media is never padded to a clock."""
 from __future__ import annotations
 
 import math
@@ -18,8 +18,8 @@ class DurationSpec:
 
 
 def _auto_duration(title: str, count: int, films: list[dict] | None = None) -> DurationSpec:
-    # A conservative fallback budget for downloads and model resource planning.
-    # Auto writing receives no word target and is never expanded to meet this estimate.
+    # A provisional editorial and resource budget, with a useful +/-25% range.
+    # Writers may repair thin reviews toward it; limited story material can still finish shorter.
     count = max(2, min(15, count))
     kind = selected_content_type()
     if kind:
