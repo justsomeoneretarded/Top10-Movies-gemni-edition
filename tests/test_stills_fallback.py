@@ -34,8 +34,10 @@ def test_too_few_images_is_reported(monkeypatch, tmp_path):
 
 def test_download_uses_stills_only_after_every_route_fails(monkeypatch, tmp_path):
     routes = []
+    shared_states = []
 
-    def failing(film, root, path, height, options, yt_dlp):
+    def failing(film, root, path, height, options, yt_dlp, *, state):
+        shared_states.append(state)
         routes.append(options.get("proxy", "direct"))
         raise PipelineError("No usable trailer for Blocked Film (2022).")
     monkeypatch.setattr(footage, "_download_route", failing)
@@ -48,6 +50,7 @@ def test_download_uses_stills_only_after_every_route_fails(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "yt_dlp", types.ModuleType("yt_dlp"))
     result = footage.download(FILM, tmp_path)
     assert routes == ["direct", "fallback"] and built == [result]
+    assert shared_states[0] is shared_states[1]  # every route shares the same bounded attempt budget
     monkeypatch.setenv("STILLS_FALLBACK", "false")
     with pytest.raises(PipelineError, match="No usable trailer"):
         footage.download(FILM, tmp_path)
