@@ -80,7 +80,9 @@ def assert_rank_introduction_sequence(events, chapters, cues, speed, count):
     (2,"false",2160,(1920,1080),"title-cards","Movies","Warguy"),
     (2,"false",2160,(1920,1080),"title-card-fails","Movies","Warguy"),
     (2,"false",2160,(1920,1080),"fallback-beats","Movies","Warguy"),
-    (2,"true",720,(1920,1080),"promoted-index-fails","Movies","Warguy"),
+    # With one HD title out of two after fallback, the 60% native-HD majority
+    # is not met: keep the 720p title native rather than upscaling the whole list.
+    (2,"true",720,(1280,720),"promoted-index-fails","Movies","Warguy"),
     (2,"true",2160,(3840,2160),"stale-preview-after-opening-failure","Movies","Warguy"),
 ])
 def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp_path, capsys, count, try_4k, source_height, expected_size, extra_mode, content_type, narrator):
@@ -592,7 +594,7 @@ def test_produce_keeps_cta_between_reviews_and_retimes_metadata(monkeypatch, tmp
                 "start": 50, "end": 52.9,
                 "text": "The original source has its own complete sentence."}]
             assert failed not in records["post_index_dialogue"]
-            assert quality["source_quality"]["export_height"] == 1080
+            assert quality["source_quality"]["export_height"] == 720
         else:
             assert records["removed_source_render_attempts"] == [failed]
             review = next(e for e in events if e["type"] == "review-preview" and e["film"] == "Movie 1")
