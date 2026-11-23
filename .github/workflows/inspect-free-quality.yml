@@ -1,0 +1,30 @@
+name: Inspect free quality package
+on:
+  push:
+    branches: [diagnostics/free-quality-45128494095]
+    paths:
+      - .github/workflows/inspect-free-quality.yml
+      - scripts/inspect_free_quality_package.py
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install inspection image reader
+        run: python -m pip install Pillow==11.3.0
+      - name: Download completed artifact only
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '45128494095'
+          name: movie-video-4
+          path: inspected
+      - name: Read scrubbed reports and thumbnail contact sheet
+        run: python scripts/inspect_free_quality_package.py
