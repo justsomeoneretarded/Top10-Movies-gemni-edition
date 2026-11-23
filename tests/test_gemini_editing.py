@@ -272,10 +272,20 @@ def test_visual_hint_cannot_authorize_unfinished_or_truncated_dialogue(monkeypat
     cues = [{"start": 9.3, "end": 11, "text": "We have to"},
             {"start": 11.1, "end": 14, "text": "get across the bridge"},
             {"start": 14.2, "end": 16, "text": "before it collapses."}]
-    clip = moments._enrich(candidate, {str(source): cues}, None, tmp_path)
-    assert clip["start"] < 9.3 and clip["start"]+clip["duration"] > 16
+    # A visual preference and full file duration cannot authorize crossing the
+    # locally verified candidate's scene boundary to find missing dialogue.
+    assert moments._enrich(candidate, {str(source): cues}, None, tmp_path) is None
+    coherent = {**candidate, "coherent_start": 9.0, "coherent_end": 16.5}
+    clip = moments._enrich(coherent, {str(source): cues}, None, tmp_path)
+    assert clip is not None
+    assert coherent["coherent_start"] <= clip["start"] < 9.3
+    assert 16 < clip["start"]+clip["duration"] <= coherent["coherent_end"]
     assert len(clip["cues"]) == 3 and not clip["muted"]
-    assert moments.complete_window(candidate, cues, (9.3, 16)) is None
+    # An analysis window which cuts off the sentence remains unusable, even
+    # when Gemini gave the candidate a positive visual-interest hint.
+    assert moments._enrich({**coherent, "coherent_start": 9.3, "coherent_end": 16.0},
+                           {str(source): cues}, None, tmp_path) is None
+    assert moments.complete_window(coherent, cues, (9.3, 16)) is None
 
 
 def test_dead_local_vision_pull_is_attempted_once_while_gemini_stays_optional(monkeypatch):
