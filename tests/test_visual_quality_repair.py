@@ -13,7 +13,7 @@ from movie_pipeline.core import PipelineError, ffmpeg
 
 def event(kind="narration"):
     return {"type": kind, "film": "The Studio (2025)", "section_kind": "review",
-            "start": 0.0, "end": 4.0}
+            "start": 0.0, "duration": 4.0}
 
 
 def test_failed_repairs_are_bounded_and_original_parts_are_retained(monkeypatch, tmp_path):
@@ -78,7 +78,7 @@ def test_export_gap_maps_to_its_same_title_part_at_actual_speed(monkeypatch):
         seen.append((bounds, row["film"]))
         return {"status": "repairable", "hold": Image.new("RGB", (2, 2))}
     monkeypatch.setattr(repair, "_classify", classify)
-    timeline = [dict(event(), start=0, end=4), dict(event(), start=4, end=8, film="The Pitt (2025)")]
+    timeline = [dict(event(), start=0, duration=4), dict(event(), start=4, duration=4, film="The Pitt (2025)")]
     result = repair.inspect_visual_export(Path("finished.mp4"), timeline, {"export_speed": 2})
     assert result["repairable_parts"] == [1]
     assert seen == [((2.0, 4.0), "The Pitt (2025)")]
