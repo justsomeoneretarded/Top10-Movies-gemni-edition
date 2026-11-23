@@ -15,8 +15,8 @@ def scrub(value):
     if isinstance(value,list):
         return [scrub(v) for v in value]
     if isinstance(value,str):
-        value = re.sub(r"AIza[0-9A-Za-z_-]{20,}|gh[pousr]_[0-9A-Za-z_]{20,}|Bearer\\s+[^\\s]+","[REDACTED]",value)
-        value = re.sub(r"([?&](?:key|token|sig|signature|api_key)=)[^&\\s]+",r"\\1[REDACTED]",value,flags=re.I)
+        value = re.sub(r"AIza[0-9A-Za-z_-]{20,}|gh[pousr]_[0-9A-Za-z_]{20,}|Bearer\s+[^\s]+","[REDACTED]",value)
+        value = re.sub(r"([?&](?:key|token|sig|signature|api_key)=)[^&\s]+",r"\1[REDACTED]",value,flags=re.I)
         return value[:6000]
     return value
 names = ["run-manifest.json","production-quality-report.json","script-quality-report.json",
@@ -44,7 +44,7 @@ for name in ["final-script.txt","recommended-title.txt","description.txt"]:
         print("TEXT_BEGIN "+name)
         print(json.dumps(scrub(p.read_text()[:24000]),ensure_ascii=True))
         print("TEXT_END "+name)
-thumbs = sorted([p for p in files if re.fullmatch(r"thumbnail-(?:0[1-9]|10)\\.jpg",p.name)],key=lambda p:p.name)
+thumbs = sorted([p for p in files if re.fullmatch(r"thumbnail-(?:0[1-9]|10)\.jpg",p.name)],key=lambda p:p.name)
 print("THUMBNAIL_COUNT "+str(len(thumbs)))
 if thumbs:
     canvas = Image.new("RGB",(1500,2*195),"#171717")
