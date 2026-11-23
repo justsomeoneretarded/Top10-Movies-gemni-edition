@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .core import duration
+from .core import duration, save_json
 from .render import brand_font
 
 
@@ -135,7 +135,9 @@ def thumbnail_scores(output: Path, genre: str) -> list[dict]:
     from .thumbnail_studio import GENRE_PROFILES, phone_check
     profile = GENRE_PROFILES.get(genre, {})
     rows = []
-    for path in sorted(output.glob("thumbnail-0*.jpg")):
+    for path in sorted(output.glob("thumbnail-*.jpg")):
+        if not re.fullmatch(r"thumbnail-(?:0[1-9]|10)\.jpg", path.name):
+            continue
         with Image.open(path) as image:
             image = image.convert("RGB")
             verdict = scenes.rate_thumbnail(image, profile.get("label", ""), profile.get("hint", "")) if scenes.enabled() else None
@@ -149,7 +151,8 @@ def _time(seconds: float) -> str:
 
 
 def build_review(output: Path, cues: list[dict], chapters: list[dict], genre: str, *, ending_seconds: float = 20.0,
-                 stills_films: list[str] | None = None, montage: list[tuple[float, float]] | None = None) -> dict:
+                 stills_films: list[str] | None = None, montage: list[tuple[float, float]] | None = None,
+                 repair_report: dict | None = None) -> dict:
     video = output / "final-video.mp4"
     length = duration(video)
     frames = _frames(video, 2.0)
@@ -163,6 +166,27 @@ def build_review(output: Path, cues: list[dict], chapters: list[dict], genre: st
                "loudness_spikes": len(spikes), "captions_on_silence": len(drift),
                "thumbnails": [{k: v for k, v in row.items() if k != "image"} for row in thumbs]}
 
+    # Repairs are receipts for actual byte-verified replacements, never a
+    # declaration that all dark scenes or promotional cards are broken.
+    receipt = repair_report or {}
+    followup = receipt.get("final_pass", {})
+    repaired = list(receipt.get("repaired", [])) + list(followup.get("repaired", []))
+    finished = receipt.get("finished_export", {})
+    advisories = finished.get("advisories", receipt.get("advisories", []))
+    unresolved = list(receipt.get("unresolved", [])) + list(followup.get("unresolved", []))
+    unresolved_parts = finished.get("repairable_parts", [])
+    dark_intervals = []
+    for a, b in blacks:
+        matching = next((row for row in advisories
+                         if isinstance(row.get("start"), (int, float)) and
+                         isinstance(row.get("end"), (int, float)) and
+                         row["start"] < b and row["end"] > a), {})
+        dark_intervals.append({"start": a, "end": b, "status": matching.get("status", "advisory"),
+                               "reason": matching.get("reason", "dark_interval_requires_review")})
+    summary["dark_intervals"] = dark_intervals
+    summary["visual_repairs"] = {"repaired": repaired, "unresolved": unresolved,
+                                  "repairable_parts": unresolved_parts, "advisories": advisories}
+
     def status(count: int, warn: int = 1) -> str:
         return "ok" if count < warn else "check"
 
@@ -171,7 +195,9 @@ def build_review(output: Path, cues: list[dict], chapters: list[dict], genre: st
     items = [
         ("Films shown with stills (no trailer could be downloaded)", status(len(stills_films)),
          ", ".join(html.escape(name) for name in stills_films) or "none"),
-        ("Black frames", status(len(blacks)), ", ".join(f"{_time(a)}–{_time(b)}" for a, b in blacks[:12]) or "none"),
+        ("Automatic visual repairs", status(len(unresolved) + len(unresolved_parts)),
+         f"{len(repaired)} repaired; {len(unresolved) + len(unresolved_parts)} unresolved; {len(advisories)} advisory"),
+        ("Dark intervals (may be intentional)", status(len(blacks)), ", ".join(f"{_time(a)}–{_time(b)}" for a, b in blacks[:12]) or "none"),
         ("Same shot shown twice inside the reviews", status(len(repeats)), ", ".join(f"{_time(a)} and {_time(b)}" for a, b in repeats[:12]) or "none"),
         ("Loudness spikes", status(len(spikes), 3), ", ".join(_time(t) for t in spikes[:15]) or "none"),
         ("Captions over silence (drift)", status(len(drift), 3),
@@ -204,6 +230,7 @@ img.sheet{{width:100%;border-radius:8px}}ul{{columns:2;padding-left:18px}}
 <h2>Contact sheet</h2><img class="sheet" src="{_data_uri(contact_sheet(frames))}" alt="Frames across the whole video">
 </body></html>"""
     (output / "review.html").write_text(page, encoding="utf-8")
+    save_json(output / "quality-review.json", summary)
     print(f"Review report: {summary['black_frames']} black, {summary['repeated_shots']} repeated, "
           f"{summary['loudness_spikes']} spikes, {summary['captions_on_silence']} drifting captions.", flush=True)
     return summary

@@ -73,20 +73,20 @@ def test_weak_or_nonfinite_relevance_never_rejects_a_preview(scores):
     assert result["source"] == str(source)
 
 
-def test_unavailable_relevance_and_analysis_keep_a_quiet_continuous_preview():
+def test_unavailable_relevance_and_analysis_keep_a_quiet_source_frame():
     source = Path("film.mp4")
     unavailable = Mock(relevance=Mock(side_effect=RuntimeError("Unavailable")))
     result = choose_preview(unavailable, [source], {}, "Film", 3.5, True)
-    assert result == {"source": str(source), "start": 0, "duration": 3.5, "muted": True}
+    assert result == {"source": str(source), "start": 0, "duration": 3.5, "muted": True, "still": True}
 
 
-def test_all_short_shots_use_one_continuous_interval_without_freeze_or_extra_cuts():
+def test_short_shots_hold_a_clean_frame_instead_of_playing_across_unknown_cuts():
     source = Path("film.mp4")
     result = choose_preview(selector([.5, .6]), [source], {str(source): shots((10, 12, 30), (40, 42, 40))}, "Film", 3.5, True)
     assert result["duration"] == 3.5
-    assert result["start"] + result["duration"] <= 42
-    assert "freeze" not in result
-    assert "still" not in result
+    assert 10 <= result["start"] <= 12 or 40 <= result["start"] <= 42
+    assert result["muted"] is True
+    assert result["still"] is True
 
 
 def test_cold_open_is_exactly_five_seconds_from_two_different_best_movies():

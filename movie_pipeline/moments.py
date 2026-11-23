@@ -22,6 +22,9 @@ def complete_window(candidate: dict, cues: list[dict], extent: tuple[float,float
     """Grow to full recognized utterances instead of truncating their words."""
     start,end=candidate["start"],candidate["start"]+candidate["duration"]
     low,high=extent
+    if not (all(math.isfinite(value) for value in (start,end,low,high))
+            and 0 <= low <= start < end <= high):
+        return None
     ordered=sorted(cues,key=lambda c:c.get("start",0))
     indices=[i for i,c in enumerate(ordered) if c.get("end",0)>start-.12 and c.get("start",high)<end+.12]
     relevant=[]
@@ -35,10 +38,12 @@ def complete_window(candidate: dict, cues: list[dict], extent: tuple[float,float
         while last+1<len(ordered) and not terminal(ordered[last]) and ordered[last+1]["start"]-ordered[last]["end"]<.8:
             last+=1
         relevant=ordered[first:last+1]
-        start=min(start,relevant[0]["start"]-.14)
-        end=max(end,relevant[-1]["end"]+.20)
-        if start<low+.04 or end>high-.04:
+        spoken_start=relevant[0]["start"]-.14
+        spoken_end=relevant[-1]["end"]+.20
+        if spoken_start<low+.04 or spoken_end>high-.04:
             return None
+        start=min(start,spoken_start)
+        end=max(end,spoken_end)
         if end-start>22 or not terminal(relevant[-1]):
             return None
     if not 3 <= end-start <= 22:
@@ -64,7 +69,10 @@ def candidates(selector,pool,shot_lookup,film):
         card=getattr(selector,"card_kind",lambda *_:None)
         # Gemini's scene map, checked against this file's real cuts.
         mapped=gemini_editing.verify_scenes(visual_advice,shots,lambda j,source=source:card(source,j) is not None)
-        genre=os.getenv("VIDEO_GENRE","")
+        from .editorial_policy import title_genres
+        genres=title_genres(film)
+        genre=("action" if "action" in genres else "adventure" if "adventure" in genres
+               else genres[0] if genres else os.getenv("VIDEO_GENRE",""))
         meaningful=_scores(selector,source,"A complete cinematic moment: a confrontation, physical comedy, chase, fight, crash, danger, fire or an emotional exchange.",len(shots))
         energetic=_scores(selector,source,"People visibly fighting, running from danger, shooting, a vehicle crash or an explosion.",len(shots))
         quiet=_scores(selector,source,"A static quiet view, an empty room or a person standing still.",len(shots))
@@ -127,7 +135,49 @@ def candidates(selector,pool,shot_lookup,film):
                                "motion":float(np.mean([shots[j].get("motion",0) for j in indices])),
                                "film_index":None,"scene_index":i,"scene_end":end,
                                "extent":max(float(x["end"]) for x in shots),
+                               "coherent_start":start,"coherent_end":end,
                                "muted":True,"cues":[]})
+        # A complete verified scene can contain more than three cuts. Preserve
+        # its connected sequence instead of only scoring short shot clusters.
+        for scene in mapped:
+            if not scene.get("verified") or not scene.get("complete") or scene.get("title_card"):
+                continue
+            start,end=float(scene["start"]),float(scene["end"])
+            if not 3 <= end-start <= 22:
+                continue
+            indices=[j for j,shot in enumerate(shots) if shot["start"]<end and shot["end"]>start]
+            if not indices or any(card(source,j) is not None for j in indices):
+                continue
+            if any(float(shots[b]["start"])-float(shots[a]["end"])>.55
+                   for a,b in zip(indices,indices[1:])):
+                continue
+            fresh=getattr(selector,"freshness",lambda *_:1)(source,start,end-start)
+            visual=getattr(selector,"visual_freshness",lambda *_:1)(source,start,end-start)
+            if fresh<.98 or visual<.8:
+                continue
+            if any(row["source"]==str(source) and abs(row["start"]-start)<.04
+                   and abs(row["duration"]-(end-start))<.04 for row in result):
+                continue
+            adjustment,notes=gemini_editing.soft_rank(visual_advice,start,end)
+            adjustment+=.10*scene["interest"]+.04
+            strength=float(np.mean(energetic[indices]-quiet[indices]))
+            score=float(np.mean(meaningful[indices]+relevant[indices]))+.10*fresh+.06*min((end-start)/10,1)
+            hook=peak.score(float(np.mean(picture_rank[indices])),peak.loudness(sound,start,end),
+                            float(np.mean(motion_rank[indices])),scene.get("energy"),genre)
+            result.append({"source":str(source),"start":start,"duration":end-start,
+                           "intensity":hook,"opening_fit":max(
+                               (gemini_editing.opening_fit(scene,g) for g in genres),default=gemini_editing.opening_fit(scene,genre)),
+                           "scene_energy":scene.get("energy"),"score":score+adjustment,
+                           "action_strength":strength,
+                           "motion":float(np.mean([shots[j].get("motion",0) for j in indices])),
+                           "film_index":None,"scene_index":indices[0],"scene_end":end,
+                           "extent":max(float(x["end"]) for x in shots),
+                           "coherent_start":start,"coherent_end":end,"native_scene_window":True,
+                           "muted":True,"cues":[],
+                           "visual_analysis":{"provider":visual_advice.get("provider",{}),
+                               "cache":visual_advice.get("cache","unknown"),
+                               "score_adjustment":adjustment,"notes":notes,
+                               "scene":{k:scene[k] for k in ("id","kind","energy","sound","complete","verified","description")}}})
     return sorted(result,key=lambda c:-c["score"])
 
 def _enrich(candidate, dialogue, recognizer, work):
@@ -139,15 +189,19 @@ def _enrich(candidate, dialogue, recognizer, work):
         pass
     if not any(stream.get("codec_type") == "audio" for stream in probe(source).get("streams", [])):
         return None
+    coherent_low=float(candidate.get("coherent_start",candidate["start"]))
+    coherent_high=float(candidate.get("coherent_end",candidate.get("scene_end",candidate["start"]+candidate["duration"])))
+    if not 0<=coherent_low<coherent_high<=candidate["extent"]+.05:
+        return None
     if str(source) in dialogue:
         cues=dialogue[str(source)]
-        extent=(0.0,candidate["extent"])
+        extent=(coherent_low,coherent_high)
     else:
         if recognizer is None:
             return None
         low=max(0,candidate["start"]-2)
         high=min(candidate["extent"], candidate["start"]+candidate["duration"]+2)
-        token=key(source.name,source.stat().st_size,round(low,3),round(high,3),"native-v1")
+        token=key(source.name,source.stat().st_size,round(low,3),round(high,3),"native-v2-coherent")
         cache=work/f"{token}.json"
         if cache.exists():
             cues=json.loads(cache.read_text())
@@ -161,7 +215,7 @@ def _enrich(candidate, dialogue, recognizer, work):
                 save_json(cache,cues)
             finally:
                 audio.unlink(missing_ok=True)
-        extent=(low,high)
+        extent=(max(low,coherent_low),min(high,coherent_high))
     return complete_window(candidate,cues,extent)
 
 def _usable(selector,clip,shot_lookup):

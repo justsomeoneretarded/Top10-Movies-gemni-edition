@@ -1,7 +1,9 @@
 """Use optional extra footage across paragraphs without increasing cut frequency."""
 from __future__ import annotations
 
+import json
 import math
+import re
 from pathlib import Path
 
 from .core import PipelineError
@@ -39,6 +41,12 @@ def _rank_sources(selector, sources: list[Path], shot_sets: dict[str, list[dict]
                 continue
             # Matching is optional; the primary remains usable even when similarity fails.
             score = 0.0
+        # Quality helps when scene relevance is close; it never overrules a
+        # substantially better semantic match or unseen footage.
+        from .video_settings import source_detail
+        quality = source_detail(path)
+        if quality:
+            score += .12 * min(1080, quality["detail_height"]) / 1080
         if uses is not None:
             score -= uses.get(str(path), 0)*.03
             if str(path) == last:
@@ -185,3 +193,47 @@ def primary_fallback_plan(selector, chosen: list[dict], trailers: list[Path],
             result.append({**shot, **cut, "duration": length, "source": str(primary),
                            "film_index": film_index, "visual_reason": "primary-after-secondary-render-failure"})
     return result
+
+
+def _source_identity(path: Path):
+    """Use canonical title IDs, never optional-source suffixes as film identity."""
+    match = re.match(r"^(movie|tv)-([0-9]+)(?:-|$)", Path(path).stem)
+    if match:
+        return match.group(1), int(match.group(2))
+    try:
+        record = json.loads(Path(path).with_suffix(".json").read_text())
+        kind, identifier = record.get("film_kind"), record.get("film_id")
+        if kind in {"movie", "tv"} and isinstance(identifier, int) and not isinstance(identifier, bool):
+            return kind, identifier
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def promote_source_pool(pool: list[Path], *, ceiling: int | None = None) -> list[Path]:
+    """Prefer the best existing usable same-title file, without copying timestamps.
+
+    Paths and their analysis sidecars stay attached to their original media bytes.
+    Known foreign IDs are discarded. Unidentified legacy paths can remain fallback
+    sources but cannot displace an identified primary merely by being large.
+    """
+    from .video_settings import source_detail
+    if not pool:
+        return []
+    expected = _source_identity(Path(pool[0]))
+    seen, rows = set(), []
+    for position, value in enumerate(pool):
+        path = Path(value)
+        token = str(path)
+        if token in seen:
+            continue
+        seen.add(token)
+        identity = _source_identity(path)
+        if expected is not None and identity is not None and identity != expected:
+            continue
+        details = source_detail(path)
+        quality = min(details["detail_height"], ceiling or 2160) if details else 0
+        identified = expected is None or identity == expected
+        rows.append((int(bool(details) and identified), quality if identified else 0, position, path))
+    rows.sort(key=lambda row: (-row[0], -row[1], row[2]))
+    return [row[3] for row in rows]

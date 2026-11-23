@@ -6,5 +6,7 @@
   "narrator": "Warguy",
   "tts_model": "original",
   "duration_minutes": "Auto",
-  "try_4k": true
+  "try_4k": true,
+  "validation_id": "free-quality-b7fb5987f8efc745dd5744fea211c645a46d5e8d",
+  "baseline_run": 44353630318
 }

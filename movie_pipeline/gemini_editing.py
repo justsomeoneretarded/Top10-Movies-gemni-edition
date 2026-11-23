@@ -44,6 +44,69 @@ _ATTEMPTED: set[str] = set()
 _VIDEO_DEADLINE = None
 _FINGERPRINTS: dict[tuple, dict] = {}
 
+
+class _AnalysisState:
+    def __init__(self, owner):
+        self.owner = owner
+        self.accepted_started = False
+        self.primary_pending = set()
+        self.discovery_deadline = None
+        self.discovery_attempts = 0
+        self.accepted_attempts = 0
+        self.cache_reuses = 0
+        self.review_reuses = 0
+        self.mapped_sources = {}
+        self.skips = {}
+
+
+_COVERAGE = None
+
+
+def _state():
+    # The set is replaced for a new run/test; do not carry another episode's
+    # fairness queue or optional timers into it.
+    global _COVERAGE
+    if _COVERAGE is None or _COVERAGE.owner is not _ATTEMPTED:
+        _COVERAGE = _AnalysisState(_ATTEMPTED)
+    return _COVERAGE
+
+
+def begin_accepted_analysis(pools):
+    """Reserve the accepted phase after discovery, without resetting hard quotas.
+
+    Called once after HD promotion. Its time allowance starts lazily on the first
+    uncached accepted request, so local shot preprocessing does not consume it.
+    """
+    state = _state()
+    if not state.accepted_started:
+        state.accepted_started = True
+        state.primary_pending = {str(Path(pool[0]).resolve()) for pool in pools if pool}
+    return coverage_snapshot()
+
+
+def coverage_snapshot():
+    state = _state()
+    return {"accepted_phase_started": state.accepted_started,
+            "pending_primary_sources": len(state.primary_pending),
+            "discovery_attempts": state.discovery_attempts,
+            "accepted_source_attempts": state.accepted_attempts,
+            "cache_reuses": state.cache_reuses, "candidate_review_reuses": state.review_reuses,
+            "unique_sources_mapped": len(state.mapped_sources),
+            "usable_mapped_source_seconds": round(sum(state.mapped_sources.values()), 3),
+            "skipped": dict(state.skips), "transport_budget": gemini.budget_snapshot()}
+
+
+def _skip(reason):
+    state = _state()
+    state.skips[reason] = state.skips.get(reason, 0) + 1
+
+
+def _mapped(source, length, *, cache=False, review=False):
+    state = _state()
+    state.mapped_sources[str(Path(source).resolve())] = length
+    state.cache_reuses += int(cache)
+    state.review_reuses += int(review)
+
 # Only types, enums and required fields are sent: Gemini rejected (HTTP 400) the same schema with
 # length, range and list-size limits for video input. Every value is bounded in validate_windows instead.
 VIDEO_SCHEMA = {
@@ -203,20 +266,24 @@ def video_models(client) -> list[str]:
     return list(dict.fromkeys([first, getattr(client, "vision_model", first)]))
 
 
-def video_json(client, prompt: str, length: float, **media) -> dict:
+def video_json(client, prompt: str, length: float, *, phase="accepted", **media) -> dict:
     """Ask for the scene map with the video model; when that model's quota is used up or it is
     unavailable, ask the other free model instead. Other errors are raised unchanged."""
     models = video_models(client)
-    for index, model in enumerate(models):
-        try:
-            return client.generate_json(prompt, VIDEO_SCHEMA, model=model, video_duration=length,
-                                        max_output_tokens=4096, thinking="low", **media)
-        except gemini.GeminiUnavailable as error:
-            text = str(error)
-            if index + 1 < len(models) and ("quota" in text or "model_unavailable" in text):
-                gemini.record_event("video_analysis", "gemini", "model_switch", text[:40], details={"to": models[index + 1]})
-                continue
-            raise
+    with gemini.video_scope(phase):
+        for index, model in enumerate(models):
+            try:
+                return client.generate_json(prompt, VIDEO_SCHEMA, model=model, video_duration=length,
+                                            max_output_tokens=4096, thinking="low", **media)
+            except gemini.GeminiUnavailable as error:
+                text = str(error)
+                can_switch = text in {"quota_exhausted", "model_unavailable",
+                                      "service_unavailable", "model_read_timeout"}
+                if index + 1 < len(models) and can_switch:
+                    gemini.record_event("video_analysis", "gemini", "model_switch", text,
+                                        details={"to_model_number": index + 2})
+                    continue
+                raise
     raise gemini.GeminiUnavailable("no_video_model")
 
 
@@ -273,15 +340,33 @@ def validate_review(data) -> dict:
             "problem": review.get("problem") if review.get("problem") in PROBLEMS else "none", "reviewed": True}
 
 
-def _budget_left() -> bool:
+def _budget_left(phase="accepted") -> bool:
     global _VIDEO_DEADLINE
+    state = _state()
+    try:
+        seconds = float(os.getenv("GEMINI_VIDEO_BUDGET_SECONDS", "1800"))
+    except ValueError:
+        seconds = 1800
+    seconds = max(0, min(2700, seconds if math.isfinite(seconds) else 1800))
+    now = time.monotonic()
+    if phase == "discovery":
+        if state.accepted_started:
+            _skip("discovery_phase_finished")
+            return False
+        if state.discovery_deadline is None:
+            state.discovery_deadline = now + min(600, seconds * gemini.DISCOVERY_SHARE)
+        available = (state.discovery_attempts < int(MAX_VIDEOS * gemini.DISCOVERY_SHARE)
+                     and len(_ATTEMPTED) < MAX_VIDEOS
+                     and now < state.discovery_deadline)
+        if not available:
+            _skip("discovery_source_or_time_budget")
+        return available
     if _VIDEO_DEADLINE is None:
-        try:
-            seconds = float(os.getenv("GEMINI_VIDEO_BUDGET_SECONDS", "1800"))
-        except ValueError:
-            seconds = 1800
-        _VIDEO_DEADLINE = time.monotonic() + max(0, min(2700, seconds if math.isfinite(seconds) else 1800))
-    return len(_ATTEMPTED) < MAX_VIDEOS and time.monotonic() < _VIDEO_DEADLINE
+        _VIDEO_DEADLINE = now + seconds
+    available = len(_ATTEMPTED) < MAX_VIDEOS and now < _VIDEO_DEADLINE
+    if not available:
+        _skip("accepted_source_or_time_budget")
+    return available
 
 
 def review_candidate(url: str, length: float, title: str = "") -> dict | None:
@@ -298,14 +383,16 @@ def review_candidate(url: str, length: float, title: str = "") -> dict | None:
         return None
     if url in _URL_REVIEWS:
         return _URL_REVIEWS[url]
-    if url in _ATTEMPTED or not _budget_left():
+    if url in _ATTEMPTED or not _budget_left("discovery"):
         REPORT.setdefault("review:" + url, {"status": "not reviewed", "title": title[:80],
                                             "reason": "Gemini video budget for this run was used up"})
         return None
     _ATTEMPTED.add(url)
+    _state().discovery_attempts += 1
     try:
         _video_pause()
-        response = video_json(gemini.get_client(), scene_prompt(length), length, youtube_url=url)
+        response = video_json(gemini.get_client(), scene_prompt(length), length,
+                              phase="discovery", youtube_url=url)
         windows = validate_windows(response, length)
         review = validate_review(response)
         usable = [w for w in windows if not w["title_card"]]
@@ -405,7 +492,7 @@ def edit_report(films: list[dict], pools, scene_maps: dict[str, list[dict]]) -> 
             "candidates_reviewed_before_download": sum(r.get("status") == "reviewed before download" for r in reviews),
             "candidates_rejected_by_review": sum(r.get("suitable") is False for r in reviews),
             "candidates_not_reviewed": sum(r.get("status") == "not reviewed" for r in reviews),
-            "titles": rows, "candidate_reviews": reviews}
+            "titles": rows, "candidate_reviews": reviews, "coverage": coverage_snapshot()}
 
 
 def _proxy_copy(source: Path) -> Path:
@@ -423,8 +510,16 @@ def cache_path(source: Path) -> Path:
 
 
 def analyse_source(source: Path) -> dict | None:
+    """Every primary gets a turn, including missing/cache-hit/failed sources."""
+    source = Path(source)
+    try:
+        return _analyse_source(source)
+    finally:
+        _state().primary_pending.discard(str(source.resolve()))
+
+
+def _analyse_source(source: Path) -> dict | None:
     """Bounded advice for the exact accepted source; inaccessible videos fall back."""
-    global _VIDEO_DEADLINE
     if not gemini.enabled() or os.getenv("GEMINI_VIDEO_ANALYSIS", "true").strip().lower() == "false":
         return None
     source = Path(source)
@@ -457,6 +552,7 @@ def analyse_source(source: Path) -> dict | None:
                 gemini.record_event("video_analysis", "gemini", "cache_hit",
                                     details={"windows": len(windows), "source_sha256": fingerprint["sha256"]})
                 REPORT.setdefault(str(source), {"status": "scene map", "scenes": len(windows)})
+                _mapped(source, actual_duration, cache=True)
                 return {**expected, "windows": windows, "review": validate_review(cached), "cache": "hit"}
         # A review made from the URL before this file was downloaded is the same analysis.
         reviewed = _URL_REVIEWS.get(url)
@@ -467,7 +563,14 @@ def analyse_source(source: Path) -> dict | None:
                         "review": {name: reviewed[name] for name in ("suitable", "variety", "problem", "reviewed")}}
                 save_json(cache_path(source), data)
                 REPORT[str(source)] = {"status": "scene map", "scenes": len(windows), "reviewed_before_download": True}
+                _mapped(source, actual_duration, review=True)
                 return {**data, "cache": "review"}
+        pending = _state().primary_pending
+        if pending and str(source.resolve()) not in pending:
+            _skip("accepted_primaries_first")
+            REPORT[str(source)] = {"status": "not reviewed",
+                                   "reason": "Accepted primary sources for other titles have priority"}
+            return None
         if url in _ATTEMPTED:
             earlier = REPORT.get("review:" + url, {}).get("reason", "")
             REPORT.setdefault(str(source), {"status": "not reviewed",
@@ -478,6 +581,7 @@ def analyse_source(source: Path) -> dict | None:
             REPORT[str(source)] = {"status": "not reviewed", "reason": "Gemini video budget for this run was used up"}
             return None
         _ATTEMPTED.add(url)
+        _state().accepted_attempts += 1
         prompt = scene_prompt(actual_duration)
         client = gemini.get_client()
         route = "youtube_link"
@@ -486,7 +590,16 @@ def analyse_source(source: Path) -> dict | None:
             response = video_json(client, prompt, actual_duration, youtube_url=url)
         except gemini.GeminiUnavailable as error:
             # The link route failed (rejected link, restricted video...): send Gemini the downloaded file itself.
-            if "quota" in str(error) or "authentication" in str(error):
+            text = str(error).lower()
+            outage = any(word in text for word in (
+                "quota", "authentication", "service_unavailable", "read_timeout", "transport",
+                "budget", "model_unavailable", "gemini_disabled"))
+            # Uploading the same media cannot repair an unavailable service,
+            # malformed schema, bad configuration, or exhausted quota.
+            media_rejection = (text.startswith("request_rejected")
+                               and any(word in text for word in ("youtube", "video", "file_uri", "fileuri"))
+                               and not any(word in text for word in ("schema", "thinking", "json", "token", "safety")))
+            if outage or not media_rejection:
                 raise
             route = "uploaded_file"
             uploaded = client.upload_video(_proxy_copy(source), timeout=300)
@@ -500,6 +613,7 @@ def analyse_source(source: Path) -> dict | None:
         data = {**expected, "windows": windows, "review": validate_review(response)}
         save_json(cache_path(source), data)
         REPORT[str(source)] = {"status": "scene map", "scenes": len(windows), "route": route}
+        _mapped(source, actual_duration)
         gemini.record_event("video_analysis", "gemini", "success",
                             details={"windows": len(windows), "source_sha256": fingerprint["sha256"],
                                      "timing_authority": "local_shots_and_transcript"})
