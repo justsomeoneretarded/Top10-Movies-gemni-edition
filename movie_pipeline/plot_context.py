@@ -62,8 +62,11 @@ def _story_sentence(sentence: str) -> str:
         # A passive followed by a purpose or an independent subject may describe
         # something inside the story: "Created by Umbrella, the virus spreads."
         # Retain ambiguous prose for the meaning-led editor instead of guessing.
-        if not explicit and (re.search(r"\bto\s+\w+", tail, re.I) or
-                             re.search(r"[,;:]\s*(?:the|a|an|he|she|they|it|his|her|their)\b", tail, re.I)):
+        production_subject = bool(re.search(
+            r"[,;:]\s*(?:the|this) (?:film|movie|show|series|story)\b", tail, re.I))
+        if not explicit and not production_subject and (
+                re.search(r"\bto\s+\w+", tail, re.I) or
+                re.search(r"[,;:]\s*(?!and\b|&)\S", tail, re.I)):
             return text
         if not explicit and re.match(r"(?:a|an|the|his|her|their)\s+", tail, re.I):
             return text
