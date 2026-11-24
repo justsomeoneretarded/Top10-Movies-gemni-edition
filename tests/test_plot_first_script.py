@@ -263,3 +263,18 @@ def test_offline_writer_keeps_plot_from_a_supplied_summary():
         "title": "Example", "rank": 1,
         "summary": "Directed by Jane Director. A doctor searches a locked hospital for her missing brother."}, 200)
     assert result == ["Number 1: Example.", FILM["overview"]]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("research_notes", ["Created by Jane Director.", FILM["overview"]]),
+    ("grounded_notes", {"directors": ["Jane Director"],
+                        "story": {"details": ["Directed by Jane Director.", FILM["overview"]]}}),
+])
+def test_offline_writer_keeps_the_first_supplied_plot_note_without_credits(field, value):
+    writer = Writer()
+    writer.ask = Mock(side_effect=ValueError("temporarily unavailable"))
+    facts = {"title": "Example", "rank": 1, field: value}
+    before = deepcopy(facts)
+    assert writer.narration("Top thrillers", "", "rank 1", facts, 200) == [
+        "Number 1: Example.", FILM["overview"]]
+    assert facts == before
