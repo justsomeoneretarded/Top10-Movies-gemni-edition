@@ -254,3 +254,12 @@ def test_explicit_creative_context_is_an_opt_in_instead_of_default_credit_metada
     assert "creative_context" not in narration_material(facts)
     assert narration_material(facts, include_creative_context=True)["creative_context"] == facts["creative_context"]
     assert "directors" not in narration_material(facts, include_creative_context=True)
+
+
+def test_offline_writer_keeps_plot_from_a_supplied_summary():
+    writer = Writer()
+    writer.ask = Mock(side_effect=ValueError("temporarily unavailable"))
+    result = writer.narration("Top thrillers", "", "rank 1", {
+        "title": "Example", "rank": 1,
+        "summary": "Directed by Jane Director. A doctor searches a locked hospital for her missing brother."}, 200)
+    assert result == ["Number 1: Example.", FILM["overview"]]
