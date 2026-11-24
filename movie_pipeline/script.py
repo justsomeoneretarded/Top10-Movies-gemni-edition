@@ -237,6 +237,14 @@ def _plot_fallback(facts: dict, rank: int | None = None) -> list[str]:
         "overview", "premise", "plot", "plot_summary", "synopsis", "storyline",
         "wiki_plot", "wiki_synopsis", "research_plot", "story", "wiki_summary", "summary")
         if isinstance(visible.get(name), str) and visible[name].strip()), "")
+    def first_note(value):
+        if isinstance(value, str):
+            return value.strip()
+        items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else []
+        return next((text for item in items if (text := first_note(item))), "")
+
+    if not premise:
+        premise = first_note(visible.get("research_notes")) or first_note(visible.get("grounded_notes"))
     opening = f"Number {rank or facts.get('rank', 1)}: {title}." if title else ""
     return [text for text in (opening, premise) if text]
 
