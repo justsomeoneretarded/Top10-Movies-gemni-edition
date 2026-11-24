@@ -1,0 +1,17 @@
+name: Verify public film metadata
+on:
+  push:
+    branches: [diagnostics/metadata-20261124]
+    paths: [.github/workflows/metadata-check.yml, scripts/metadata_check_20261124.py]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read bounded public TMDB records
+        env:
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+        run: python3 scripts/metadata_check_20261124.py
