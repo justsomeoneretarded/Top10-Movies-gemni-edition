@@ -189,7 +189,12 @@ class Research:
             raise PipelineError(f"No factual synopsis available for {item.title}; refusing to invent one.")
         crew = details.get("credits", {}).get("crew", [])
         release_evidence = list(match.get("_release_year_evidence", []))
-        release_evidence += tmdb_release_evidence(details.get("release_dates", {}), kind, match["id"])
+        # Appended dates inherit the already-verified parent identity. Copy only
+        # ID-less nested payloads; explicit conflicting IDs remain rejected.
+        release_dates = details.get("release_dates")
+        if isinstance(release_dates, dict) and "id" not in release_dates:
+            release_dates = {**release_dates, "id": details["id"]}
+        release_evidence += tmdb_release_evidence(release_dates, kind, match["id"])
         canonical_source = f"https://www.themoviedb.org/{kind}/{match['id']}"
         for date in (match.get("release_date" if kind == "movie" else "first_air_date"),
                      details.get("release_date" if kind == "movie" else "first_air_date")):
