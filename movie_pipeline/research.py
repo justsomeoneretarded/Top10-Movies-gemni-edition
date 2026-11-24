@@ -117,7 +117,7 @@ class Research:
         kinds = ((selected_kind,) if selected_kind in ("movie", "tv") else
                  ("tv", "movie") if getattr(self, "preferred_kind", "movie") == "tv" else ("movie", "tv"))
         for kind in kinds:
-            alias_checks = release_checks = 0
+            alias_checks = 0
             data = self.get(f"search/{kind}", query=item.title, language="en-US", include_adult="false")
             results = list(data.get("results", []))
             if fold_accents(item.title) != item.title:
@@ -140,10 +140,9 @@ class Research:
                 if similarity < 0.88:
                     continue
                 eligible = date[:4] == str(item.year)
-                if not eligible and kind == "movie" and release_checks < 5:
+                if not eligible and kind == "movie":
                     # Check this earlier result's actual festival/regional dates
                     # before considering a later same-title exact-year record.
-                    release_checks += 1
                     try:
                         releases = self.get(f"movie/{found['id']}/release_dates")
                         evidence = tmdb_release_evidence(releases, kind, found["id"])
@@ -172,7 +171,8 @@ class Research:
         if match.get("_year_evidence"):
             print(f"Verified {item.title} ({item.year}) via {match['_year_evidence']} (search release date: {match.get('release_date', '')}).", flush=True)
         details = self.get(f"{kind}/{match['id']}", append_to_response="videos,credits,external_ids,keywords,images,release_dates", include_image_language="en,null", language="en-US")
-        if not isinstance(details, dict) or details.get("id", match["id"]) != match["id"]:
+        if (not isinstance(details, dict) or type(details.get("id")) is not int
+                or details["id"] != match["id"]):
             raise PipelineError("TMDB details do not belong to the selected production.")
         videos = details.get("videos", {}).get("results", [])
         # Original-language trailers may exist when English-localized metadata has none.
