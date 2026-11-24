@@ -13,8 +13,9 @@ import requests
 from .availability import availability_line
 from .core import PipelineError, key, normalized, save_json
 from .timing import narration_words
+from .plot_context import character_names, plot_material, remove_credit_sentences, story_text
 
-SCRIPT_POLICY_VERSION = 7
+SCRIPT_POLICY_VERSION = 8
 DELIVERIES = ("hype", "normal", "dramatic", "calm")
 OPENING = "a punchy opening hook, without listing every title"
 CLOSING = "a short closing thought and one audience question"
@@ -35,7 +36,9 @@ def short_rank_opening(paragraph: str, rank: int, title: str) -> str:
 
 FACT_FIELDS = ("title", "year", "kind", "status", "release_date", "genres", "directors", "creators", "tagline",
                "runtime_minutes", "seasons", "episodes", "networks", "keywords", "overview", "tmdb_rating", "tmdb_votes",
-               "wiki_summary", "wiki_production", "wiki_reception", "research_notes", "grounded_notes")
+               "wiki_summary", "wiki_production", "wiki_reception", "research_notes", "grounded_notes",
+               "summary", "plot", "wiki_plot", "synopsis", "plot_summary", "storyline", "premise",
+               "story", "wiki_synopsis", "research_plot", "characters", "character_context", "creative_context")
 
 
 _SCENES = re.compile(r'(,\s*)?"available_scenes":\s*\[(?:"(?:[^"\\]|\\.)*"|[\s,])*\](\s*,)?')
@@ -49,6 +52,9 @@ def without_scene_labels(prompt: str) -> str:
 def film_facts(film: dict) -> dict:
     """The verified material a writer may use for one title: TMDB plus optional Wikipedia notes."""
     facts = {name: film[name] for name in FACT_FIELDS if film.get(name) not in (None, "", [])}
+    people = character_names(film)
+    if people:
+        facts["characters"] = people
     roles = [f"{c['name']} as {c['character']}" if c.get("character") else c["name"]
              for c in film.get("cast_profiles", []) if isinstance(c, dict) and c.get("name")]
     if roles or film.get("cast"):
@@ -218,10 +224,29 @@ def plain_words(text: str, protected=()) -> str:
 
 
 def narration_material(facts: dict) -> dict:
-    """Story-oriented writing context; research and packaging keep full metadata."""
-    excluded = {"tagline", "tmdb_rating", "tmdb_votes", "runtime_minutes", "networks",
-                "wiki_reception", "seasons", "episodes", "watch_availability"}
-    return {name: value for name, value in facts.items() if name not in excluded}
+    """Give spoken reviews story material, while research/packaging keep metadata."""
+    return plot_material(facts)
+
+
+def _plot_fallback(facts: dict, rank: int | None = None) -> list[str]:
+    """Keep the supplied premise if optional writing is unavailable; never add credits."""
+    visible = narration_material(facts)
+    title = str(visible.get("title") or "").strip()
+    premise = next((visible[name].strip() for name in (
+        "overview", "premise", "plot", "plot_summary", "synopsis", "storyline",
+        "wiki_plot", "wiki_synopsis", "research_plot", "story", "wiki_summary")
+        if isinstance(visible.get(name), str) and visible[name].strip()), "")
+    opening = f"Number {rank or facts.get('rank', 1)}: {title}." if title else ""
+    return [text for text in (opening, premise) if text]
+
+
+def _has_review_body(paragraphs: list[str], facts: dict) -> bool:
+    text = " ".join(paragraphs).strip()
+    title = str(facts.get("title") or "").strip()
+    if title:
+        text = re.sub(r"^Number\s+\d+:\s*" + re.escape(title) + r"\s*[.!?]?\s*",
+                      "", text, count=1, flags=re.I)
+    return bool(text.strip())
 
 
 def narration_paragraphs(values) -> list[str]:
@@ -488,7 +513,7 @@ class Writer:
 
     def plan(self, title: str, brief: str, films: list[dict]) -> dict:
         """One pass over the whole list: angle, hooks, standout facts and escalation toward number one."""
-        cache = self.cache_dir / f"{key('episode-plan-v5-depth', self.model, title, brief, [film_facts(f) for f in films])}.json" if self.cache_dir else None
+        cache = self.cache_dir / f"{key('episode-plan-v6-plot', self.model, title, brief, [plan_facts(f) for f in films])}.json" if self.cache_dir else None
         if cache and cache.exists():
             return json.loads(cache.read_text())
         entry = {"type": "object", "properties": {
@@ -507,7 +532,7 @@ class Writer:
         prompt = (
             f"Plan a YouTube countdown episode titled {title!r}. Creative direction: {brief}\n"
             f"Ranked titles and story material (rank 1 is presented last): {json.dumps(data, ensure_ascii=False)}\n"
-            "Plan like the showrunner of a top movie-recommendation channel. Return:\n"
+            "Plan the story information viewers need to understand each recommendation. Return:\n"
             "- promise: one plain sentence on what the title promises the viewer and how this list pays it off; everything else serves it.\n"
             "- angle: one sentence on what ties this list together for the viewer, in plain words.\n"
             "- opening_hook: one or two spoken sentences that hook viewers in under eight seconds; name no titles and no ranks.\n"
@@ -518,8 +543,13 @@ class Writer:
              "comparison_anchor (return an empty string; comparison bridges are not required), "
             "and standout_scene (one story moment a viewer can picture).\n"
             "- comment_question: one specific question viewers can answer in the comments.\n"
-            "Use the supplied material as context. Prefer specific ideas and ordinary spoken English. No ratings, tagline quotations, "
-            "or stock acting praise. Leave optional fields empty when they add nothing. No markdown.")
+            "Use the supplied story material. Each entry should give a person or group, their situation, "
+            "what they try to do, and the obstacle or danger in their way. A setting or consequence can help when supplied. "
+            "Choose useful details from the plot, not a director/creator/cast list, production trivia or a verdict about quality. "
+            "Use everyday words and actions a viewer can picture, rather than claims about themes, chemistry or cinematic style. "
+            "The order can vary by story; these are useful questions, not a repeated spoken template. "
+            "Do not invent events to fill optional fields. No ratings, tagline quotations or stock acting praise. "
+            "Leave optional fields empty when they add nothing. No markdown.")
         # Ten entries with seven fields each need about 3,000 tokens; a cut-off answer is invalid JSON,
         # so the budget scales with the list and a failed answer is retried once with more room.
         plan, error = None, None
@@ -567,11 +597,30 @@ class Writer:
         defaults = aligned_delivery({"kind": kind, "film": (rank or 1)-1, "paragraphs": paragraphs})
         if not paragraphs:
             return paragraphs, defaults
-        cache = self.cache_dir / f"{key('edit-v4-depth', self.model, topic, brief, role, narration_material(facts), paragraphs)}.json" if self.cache_dir else None
+        if kind == "film" and not opening and not closing:
+            pairs = [(story_text(paragraph), label) for paragraph, label in zip(paragraphs, defaults)]
+            pairs = [(paragraph, label) for paragraph, label in pairs if paragraph]
+            paragraphs = [paragraph for paragraph, _label in pairs]
+            defaults = [label for _paragraph, label in pairs]
+            if not paragraphs or (not _has_review_body(paragraphs, facts) and len(_plot_fallback(facts, rank)) > 1):
+                paragraphs = _plot_fallback(facts, rank)
+                defaults = aligned_delivery({"kind": kind, "film": (rank or 1)-1, "paragraphs": paragraphs})
+            if not paragraphs:
+                return paragraphs, defaults
+        cache = self.cache_dir / f"{key('edit-v5-plot', self.model, topic, brief, role, narration_material(facts), paragraphs)}.json" if self.cache_dir else None
         if cache and cache.exists():
             saved = json.loads(cache.read_text())
             if saved.get("paragraphs"):
-                return saved["paragraphs"], saved.get("delivery", defaults)
+                cached = saved["paragraphs"]
+                labels = saved.get("delivery", defaults)
+                if kind == "film" and not opening and not closing:
+                    pairs = [(story_text(text), label) for text, label in zip(cached, (labels+["normal"]*len(cached))[:len(cached)])]
+                    pairs = [(text, label) for text, label in pairs if text]
+                    cached = [text for text, _label in pairs]
+                    labels = [label for _text, label in pairs]
+                    if not cached or (not _has_review_body(cached, facts) and len(_plot_fallback(facts, rank)) > 1):
+                        return paragraphs, defaults
+                return cached, labels
         schema = {"type": "object", "properties": {
             "paragraphs": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"type": "object", "properties": {
                 "text": {"type": "string"}, "delivery": {"type": "string", "enum": list(DELIVERIES)}},
@@ -579,9 +628,14 @@ class Writer:
             "required": ["paragraphs"], "additionalProperties": False}
         prompt = (
             f"You are the spoken-script editor for {role} in {topic!r}. Creative direction: {brief}\n"
-            f"Story material: {json.dumps(narration_material(facts), ensure_ascii=False)}\n"
+            f"Plot and character material: {json.dumps(narration_material(facts), ensure_ascii=False)}\n"
             f"Draft narration: {json.dumps(paragraphs, ensure_ascii=False)}\n"
-            "Rewrite weak ideas rather than exchanging adjectives. Make it easy to picture who is involved, "
+            "Rewrite weak ideas rather than exchanging adjectives. Keep the review about the plot and storyline. "
+            "Start from the people in the story, their situation, the event that changes things, and what they do next. "
+            "Use named characters when useful; do not turn the review into a director, creator or actor introduction. "
+            "Remove credit-only sentences and optional behind-the-scenes facts, even when they are accurate. "
+            "Do not compensate with another generic sentence. "
+            "Make it easy to picture who is involved, "
             "what they want, what goes wrong, and what makes this particular story interesting. The order is flexible; "
             "do not force every review into the same structure. Explain appeal through concrete situations or choices. "
             "Remove source-reading language, tagline quotations, ratings, empty praise about chemistry or themes, "
@@ -609,6 +663,13 @@ class Writer:
             edited = narration_paragraphs([item.get("text", "") for item in items if isinstance(item, dict)])
             labels = [item.get("delivery") if item.get("delivery") in DELIVERIES else "normal"
                       for item in items if isinstance(item, dict) and str(item.get("text", "")).strip()]
+            if kind == "film" and not opening and not closing:
+                pairs = [(story_text(text), label) for text, label in zip(edited, labels)]
+                pairs = [(text, label) for text, label in pairs if text]
+                edited = [text for text, _label in pairs]
+                labels = [label for _text, label in pairs]
+                if not edited or (not _has_review_body(edited, facts) and len(_plot_fallback(facts, rank)) > 1):
+                    return paragraphs, defaults
             issue = (_section_issue(edited, facts, opening=opening, closing=closing)
                      or _editorial_issue(edited, opening=opening, theme=_theme(topic, brief, facts))) if edited else "empty"
             if issue or (closing and not all(w in " ".join(edited).casefold() for w in ("like", "subscribe"))):
@@ -627,9 +688,13 @@ class Writer:
         visible = narration_material({name: value for name, value in facts.items() if name not in {"titles", "other_titles"}})
         if opening or closing:
             visible["count"] = max(1, facts.get("count") or len(facts.get("titles", [])))
-        cache = self.cache_dir / f"{key('narration-v12-depth', self.model, topic, brief, label, visible, goal)}.json" if self.cache_dir else None
+        cache = self.cache_dir / f"{key('narration-v13-plot', self.model, topic, brief, label, visible, goal)}.json" if self.cache_dir else None
         if cache and cache.exists():
             saved = narration_paragraphs(json.loads(cache.read_text()))
+            if not opening and not closing:
+                saved = remove_credit_sentences(saved)
+                if not _has_review_body(saved, facts) and len(_plot_fallback(facts)) > 1:
+                    saved = []
             if saved:
                 return saved
 
@@ -664,7 +729,10 @@ class Writer:
                 "Start with the short announcement 'Number [rank]: [title].' Then tell the viewer something concrete "
                 "about what actually happens in its story. Its specific situation can convey the appeal without a separate verdict. "
                 "Choose the opening and order "
-                "from the material itself. Actor/director information is optional and useful only when it explains something. "
+                "from the material itself. The spoken subject is the plot and storyline: who we follow, what happens, "
+                "what they are trying to do, and what danger or problem stands in their way. "
+                "Character names are useful when they make events clearer. Do not announce actors, directors, creators, "
+                "writers or production credits; those names are identification metadata, not the review. "
                 "Do not read taglines, ratings, database labels, or provider listings. Do not use generic comments about "
                 "chemistry, themes or performances as a substitute for explaining the story. "
                 "Native scenes will provide pauses, so stop when useful material is covered. "
@@ -691,6 +759,8 @@ class Writer:
                     + budget + style +
                     " Use clear conversational sentences and complete thoughts. Every sentence should add a useful "
                     "story detail, explanation, observation or natural joke. Vary the structure across recommendations. "
+                    "Use concrete events and choices rather than review jargon or academic language. "
+                    "Do not explain that there is a central conflict; describe the problem itself. "
                     "Avoid empty hype, essay language, forced slang and generic transitions. Do not pad short material. "
                     "Paragraphs should follow thought boundaries, not a fixed word count. "
                     "No markdown, editing notes, URLs, stage directions or sound cues. " + correction,
@@ -699,6 +769,11 @@ class Writer:
                 correction = f"Return complete narration paragraphs as JSON; the previous attempt was unavailable ({type(exc).__name__})."
                 continue
             cleaned = narration_paragraphs(result.get("paragraphs", [])) if isinstance(result, dict) else []
+            if not opening and not closing:
+                cleaned = remove_credit_sentences(cleaned)
+                if not _has_review_body(cleaned, facts) and len(_plot_fallback(facts)) > 1:
+                    correction = "The response only identifies the title. Explain the supplied plot: who does what, what goes wrong, and what is at stake. No credits or replacement hype."
+                    continue
             if not cleaned:
                 correction = "The response was empty or malformed; supply complete narration thoughts."
                 continue
@@ -724,11 +799,7 @@ class Writer:
                 line = "Like and "+line[:1].lower()+line[1:]
             return complete([line+" Watch our other recommendations on the channel."], keep=False)
         if facts.get("title"):
-            lead = f"Number {facts.get('rank', 1)}: {facts['title']}."
-            premise = str(facts.get("overview") or facts.get("wiki_summary") or "").strip()
-            if premise:
-                return complete([lead, premise], keep=False)
-            return complete([lead], keep=False)
+            return complete(_plot_fallback(facts), keep=False)
         raise PipelineError(f"No usable narration text generated for {label} after three attempts.")
 
     def bridges(self, title: str, brief: str, films: list[dict], sections: list[dict]) -> dict[int, str]:
@@ -744,7 +815,7 @@ class Writer:
         order = [section["film"] for section in reviews]  # countdown order, number one last
         summary = [{"rank": index + 1, "title": films[index]["title"],
                     "review_start": " ".join(section.get("paragraphs", [])[:1])[:220]} for index, section in zip(order, reviews)]
-        cache = self.cache_dir / f"{key('bridges-v1', self.model, title, brief, summary)}.json" if self.cache_dir else None
+        cache = self.cache_dir / f"{key('bridges-v2-plot', self.model, title, brief, summary)}.json" if self.cache_dir else None
         if cache and cache.exists():
             return {int(k): v for k, v in json.loads(cache.read_text()).items()}
         retention = sorted({max(1, len(order) // 2), max(1, len(order) - 2)})  # positions with a 'stay for number one' tease
@@ -790,7 +861,7 @@ class Writer:
                     units.append({"id":f"{i}:{p}:{n}","text":sentence,"rank":section["film"]+1})
         if len(units)<6:
             return sections
-        cache=self.cache_dir/f"{key('episode-delete-v3-depth',self.model,title,brief,units)}.json" if self.cache_dir else None
+        cache=self.cache_dir/f"{key('episode-delete-v4-plot',self.model,title,brief,units)}.json" if self.cache_dir else None
         try:
             if cache and cache.exists():
                 data=json.loads(cache.read_text())
@@ -910,7 +981,10 @@ class Writer:
             facts["rank"] = index + 1
             facts["other_titles"] = [film["title"] for i, film in enumerate(films) if i != index]
             if plan.get("entries", {}).get(str(index + 1)):
-                facts["episode_plan"] = {k:v for k,v in plan["entries"][str(index + 1)].items() if k != "comparison_anchor"}
+                facts["episode_plan"] = {
+                    name: remove_credit_sentences(value) if isinstance(value, list) else story_text(value)
+                    for name, value in plan["entries"][str(index + 1)].items()
+                    if name in {"hook", "standout_facts", "standout_scene"} and isinstance(value, (str, list))}
             words = max(1, round(per_film * weights[index]))
             facts["planning_words"] = words
             paragraphs = []
