@@ -125,7 +125,7 @@ def _film():
 
 def _evidence(year, *, identifier=1339713):
     return {"year": year, "source": f"https://api.themoviedb.org/3/movie/{identifier}/release_dates",
-            "kind": "festival", "identity": f"movie/{identifier}"}
+            "kind": "festival", "identity": f"movie/{identifier}", "date": f"{year}-09-06"}
 
 
 def test_only_same_production_evidence_adds_release_years():
@@ -231,4 +231,98 @@ def test_public_release_evidence_cannot_cross_page_identity(case):
         evidence["source"] = "https://en.wikipedia.org/wiki/Obsession_(other_film)"
     else:
         evidence["identity"] = "https://en.wikipedia.org/wiki/Obsession_(other_film)"
+    assert verified_release_years(film) == {2026}
+
+
+
+def test_public_page_extract_retains_quoted_festival_and_theatrical_years(monkeypatch):
+    gemini_research = pytest.importorskip("movie_pipeline.gemini_research")
+    lead = "Obsession is a 2025 American supernatural horror film written and directed by Curry Barker."
+    festival = "The film had its world premiere at the Toronto International Film Festival on September 6, 2025."
+    theatrical = "The film was released theatrically in the United States on May 13, 2026."
+    premise = "A lonely young man makes a wish that turns his romantic hopes into a dangerous obsession."
+    url = "https://en.wikipedia.org/wiki/Obsession_(2025_film)"
+    page = {"title": "Obsession (2025 film)", "url": url, "aliases": ["Obsession"],
+            "text": "\n\n".join([lead, premise, festival, theatrical])}
+    client = Mock()
+    client.generate_json.return_value = {
+        "title": "Obsession", "year": 2025, "kind": "movie", "source_index": 0,
+        "identity_evidence": lead, "year_evidence": festival,
+        "overview_evidence": premise, "research_notes_evidence": [],
+        "cast": [], "directors": [{"name": "Curry Barker", "evidence": lead}],
+        "creators": [], "genres": [],
+    }
+    monkeypatch.setattr(gemini_research, "collect_public_sources", Mock(return_value=[page]))
+    monkeypatch.setattr(gemini_research, "get_client", Mock(return_value=client))
+    film = gemini_research._public_film(FilmInput("Obsession", 2025), "movie")
+    assert verified_release_years(film) == {2025, 2026}
+    assert client.generate_json.call_count == 1
+    assert film["overview"] == premise
+    assert film["identity_evidence"] == lead
+    quotes = {row["text"] for row in film["research_evidence"]}
+    assert festival in quotes and theatrical in quotes
+    assert any(row["year"] == 2026 and row["quote"] == theatrical
+               for row in film["release_year_evidence"])
+
+
+@pytest.mark.parametrize("conflict", [None, "director", "imdb"])
+def test_public_media_enrichment_stays_with_the_same_production(monkeypatch, tmp_path, conflict):
+    pytest.importorskip("movie_pipeline.gemini_research")
+    import movie_pipeline.research as module
+
+    monkeypatch.setenv("WIKIPEDIA_CONTEXT", "false")
+    monkeypatch.setattr(module, "enabled", lambda: True)
+    monkeypatch.setattr(module, "record_event", Mock())
+    film = {**_public_film(), "year": 2025,
+            "overview": "A lonely young man faces the consequences of a dangerous wish.",
+            "cast": ["Michael Johnston"], "directors": ["Curry Barker"],
+            "imdb_id": "tt37287335", "backdrops": [], "posters": [], "trailers": []}
+    metadata = {**_film(), "cast": ["Michael Johnston"], "directors": ["Curry Barker"],
+                "imdb_id": "tt37287335", "backdrops": ["/feature.jpg"],
+                "posters": ["/feature-poster.jpg"],
+                "trailers": [{"site": "YouTube", "key": "example1234", "type": "Trailer"}],
+                "release_year_evidence": [_evidence(2026)]}
+    if conflict == "director":
+        metadata["directors"] = ["Audrey Collins"]
+    elif conflict == "imdb":
+        metadata["imdb_id"] = "tt99999999"
+    monkeypatch.setattr(module, "research_film", Mock(return_value=film))
+    research = object.__new__(Research)
+    research.token = "configured-without-network"
+    research.selected_kind = "movie"
+    research.resolve = Mock(return_value=metadata)
+    enriched = research.collect([FilmInput("Obsession", 2025)], tmp_path / "research.json")[0]
+    assert enriched["overview"] == film["overview"]
+    if conflict:
+        assert enriched["backdrops"] == []
+        assert enriched["trailers"] == []
+    else:
+        assert enriched["tmdb_id"] == 1339713
+        assert enriched["backdrops"] == ["/feature.jpg"]
+        assert enriched["trailers"] == metadata["trailers"]
+        assert verified_release_years(enriched) == {2025, 2026}
+
+
+def test_tmdb_release_year_without_a_dated_event_is_not_proof():
+    evidence = _evidence(2026)
+    evidence.pop("date")
+    assert verified_release_years({**_film(), "release_year_evidence": [evidence]}) == {2025}
+
+
+def test_tmdb_release_event_date_must_match_its_claimed_year():
+    evidence = {**_evidence(2026), "date": "2024-09-06"}
+    assert verified_release_years({**_film(), "release_year_evidence": [evidence]}) == {2025}
+
+
+@pytest.mark.parametrize("quote", [
+    "The lead actor was born in 2024 and later starred in the film.",
+    "Production began in 2024 with location filming in Canada.",
+    "The second season premiered in 2024 with a new cast.",
+])
+def test_public_incidental_dates_cannot_add_a_release_year(quote):
+    film = _public_film()
+    url = film["source"]
+    film["research_evidence"].append({"text": quote, "sources": [url]})
+    film["release_year_evidence"] = [{"year": 2024, "source": url, "identity": url,
+                                     "kind": "public_release", "quote": quote}]
     assert verified_release_years(film) == {2026}
