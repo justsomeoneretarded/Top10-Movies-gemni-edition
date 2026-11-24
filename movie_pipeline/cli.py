@@ -335,7 +335,8 @@ def setup_run(title: str, brief: str, movies: str, work: Path, output: Path, sta
     research.preferred_kind = content_type or ("tv" if shows_title and not movies_title else "movie")
     research.selected_kind = content_type
     facts_path = work / "research.json"
-    films = json.loads(facts_path.read_text()) if facts_path.exists() else research.collect(items, facts_path)
+    # Research owns cache validation and verified release-date policy migrations.
+    films = research.collect(items, facts_path)
     films = enrich_availability(films, research, work / "availability")
     notice("Research", f"{len(films)} titles resolved; Wikipedia notes for {sum(1 for f in films if f.get('wiki_summary'))}; "
            f"TMDB stills for {sum(1 for f in films if f.get('backdrops'))}. Elapsed {(time.time()-started)/60:.0f} min.")
