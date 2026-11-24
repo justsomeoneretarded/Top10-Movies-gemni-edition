@@ -89,19 +89,21 @@ def search_queries(film: dict, *, primary: bool = False, limit: int = 7) -> list
     season = season_hint(film)
     free = " ".join(part for part in (title, season) if part)
     dated = " ".join(str(part) for part in (title, film.get("year"), season) if part)
-    generic = [f"{dated} official trailer", f"{free} official trailer",
-               f"{dated} best scene", f"{free} best scene"]
+    generic = [f"{dated} official trailer", f"{free} trailer",
+               f"{dated} best scene", f"{free} best scene", f"{dated} trailer"]
     concepts = [SCENE_CONCEPTS[g] for g in title_genres(film) if g in SCENE_CONCEPTS]
     relevant = [f"{free} {words[0]}" for words in concepts]
     contextual = [f"{free} {term} scene" for term in context_terms(film)]
-    required = generic if primary else [generic[2], generic[3], generic[0], generic[1]]
-    queries = [*required, *relevant[:2], *contextual[:1]]
+    required = generic if primary else [generic[2], generic[3], generic[0], generic[1], generic[4]]
+    # Keep every basic trailer/scene route, then reserve one slot each for genre
+    # and premise context; richer metadata must not crowd out the basic routes.
+    queries = [*required, *relevant[:1], *contextual[:1]]
     # Other verified release labels can be useful, but never replace year-free
     # discovery or accept an unverified list of alternative years.
     queries += [f"{title} {year} {season} official trailer".replace("  ", " ")
                 for year in sorted(verified_release_years(film)) if str(year) != str(film.get("year"))]
     queries += [f"{dated} {words[0]}" for words in concepts]
-    queries += [*relevant[2:], *contextual[1:]]
+    queries += [*relevant[1:], *contextual[1:]]
     for depth in (1, 2):
         queries += [f"{free} {words[depth]}" for words in concepts if depth < len(words)]
     director = film.get("director") or next(iter(film.get("directors") or []), "")

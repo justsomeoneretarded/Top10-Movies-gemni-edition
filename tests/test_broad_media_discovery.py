@@ -311,3 +311,21 @@ def test_a_matching_dedicated_production_homepage_can_prove_identity_without_peo
     film = {**FILM, "cast": [], "directors": [], "homepage": homepage, "imdb_id": ""}
     assert accept(video(description=f"Production page: {homepage}"), film)
     assert not accept(video(description="Production page: https://studio.example/films/different-orchard"), film)
+
+
+@pytest.mark.parametrize("primary", [False, True])
+def test_basic_query_families_survive_rich_metadata_within_the_seven_query_budget(primary):
+    film = {**FILM, "genres": ["Horror", "Thriller", "Mystery"],
+            "keywords": [{"name": "desert island"}, {"name": "survival"}],
+            "directors": ["Dana Parks"]}
+    queries = editorial_policy.search_queries(film, primary=primary)
+    assert len(queries) <= 7
+    assert {
+        "Night Orchard 2025 official trailer",
+        "Night Orchard 2025 trailer",
+        "Night Orchard trailer",
+        "Night Orchard 2025 best scene",
+        "Night Orchard best scene",
+    }.issubset(queries)
+    assert "Night Orchard scary scene" in queries
+    assert "Night Orchard desert island scene" in queries
