@@ -174,6 +174,69 @@ def test_useful_short_plot_is_not_padded_to_an_arbitrary_target():
     assert writer.ask.call_count == 1
 
 
+@pytest.mark.parametrize("sentence", [
+    "Created by Umbrella, the virus spreads through the hospital.",
+    "Written by John to lure her back, the note sends Ada to a trap.",
+    "The director searches the set while her crew vanish.",
+    "Written by a killer, the note sends her to the old hospital.",
+])
+def test_ambiguous_passives_and_fictional_jobs_keep_their_plot(sentence):
+    assert story_text(sentence) == sentence
+
+
+@pytest.mark.parametrize("sentence", [
+    "directed by david fincher.",
+    "Created by Jane Director.",
+    "The series was created by Alex Creator.",
+    "The movie is directed by Jane Director.",
+    "The series stars Terry Actor.",
+])
+def test_structural_credits_are_removed_regardless_of_capitalization(sentence):
+    assert story_text(sentence) == ""
+
+
+def test_mixed_actor_role_premise_retains_the_problem_without_actor_rollcall():
+    sentence = "The series stars Noah Wyle as a doctor fighting to keep an ER running."
+    assert story_text(sentence) == "The story follows a doctor fighting to keep an ER running."
+    assert story_text("Example is a 2025 drama series starring Noah Wyle as a doctor fighting to save an ER.") == (
+        "The story follows a doctor fighting to save an ER.")
+
+
+def test_grounded_story_notes_and_character_roles_survive_the_projection():
+    film = {**FILM,
+            "summary": "Directed by Jane Director. Ada is locked inside the hospital.",
+            "research_notes": ["Created by Alex Creator.", "Her brother is trapped in the basement."],
+            "grounded_notes": {"plot": "A guard offers her a key.", "directors": ["Jane Director"]},
+            "character_context": [{"character": "Ada", "role": "a doctor seeking her brother"}]}
+    full = film_facts(film)
+    before = deepcopy(full)
+    material = narration_material(full)
+    assert material["summary"] == "Ada is locked inside the hospital."
+    assert material["research_notes"] == ["Her brother is trapped in the basement."]
+    assert material["grounded_notes"] == {"plot": "A guard offers her a key."}
+    assert material["character_context"] == film["character_context"]
+    assert full == before
+
+
+def test_creative_context_is_explicit_opt_in_and_never_exposes_raw_credits():
+    facts = {**film_facts(FILM), "creative_context": "A requested retrospective connection.",
+             "requested_creative_context": "Explain a purposeful connection to the story."}
+    assert "creative_context" not in narration_material(facts)
+    requested = narration_material(facts, include_creative_context=True)
+    assert requested["creative_context"] == facts["creative_context"]
+    assert requested["requested_creative_context"] == facts["requested_creative_context"]
+    assert "directors" not in requested and "cast" not in requested
+
+
+def test_an_old_cast_list_brief_does_not_override_the_plot_review_instructions():
+    writer = Writer()
+    short = "Number 1: Example. A doctor searches for her missing brother."
+    writer.ask = Mock(return_value={"paragraphs": [short]})
+    assert writer.narration("Top thrillers", "Include the director and stars", "rank 1",
+                            {**film_facts(FILM), "rank": 1}, 200) == [short]
+    prompt = writer.ask.call_args.args[0]
+    assert "keeping production rollcalls out of the review" in prompt
+    assert all(name not in prompt for name in ("Jane Director", "Alex Creator", "Terry Actor"))
 def test_scene_advisory_remains_available_without_becoming_plot_evidence():
     film = {**FILM, "available_scenes": ["A crowded hospital corridor."]}
     writer = Writer()
