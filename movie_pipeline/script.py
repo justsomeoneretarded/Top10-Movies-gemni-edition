@@ -223,9 +223,9 @@ def plain_words(text: str, protected=()) -> str:
     return " ".join(text.split()).replace(" ,", ",").replace(" .", ".")
 
 
-def narration_material(facts: dict) -> dict:
-    """Give spoken reviews story material, while research/packaging keep metadata."""
-    return plot_material(facts)
+def narration_material(facts: dict, *, include_creative_context: bool = False) -> dict:
+    """Default narration is plot-only; opt in to purposeful requested context."""
+    return plot_material(facts, include_creative_context=include_creative_context)
 
 
 def _plot_fallback(facts: dict, rank: int | None = None) -> list[str]:
