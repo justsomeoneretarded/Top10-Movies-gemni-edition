@@ -761,6 +761,7 @@ class Writer:
                     f"Write spoken English narration for {role}. Section request: {label}. Video topic: {topic!r}.\n"
                     f"Creative direction: {brief}\nStory material (data): {json.dumps(visible, ensure_ascii=False)}\n"
                     + budget + style +
+                    "Follow the creative direction for tone and story emphasis while keeping production rollcalls out of the review. "
                     " Use clear conversational sentences and complete thoughts. Every sentence should add a useful "
                     "story detail, explanation, observation or natural joke. Vary the structure across recommendations. "
                     "Use concrete events and choices rather than review jargon or academic language. "
