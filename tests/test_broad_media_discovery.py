@@ -253,3 +253,61 @@ def test_primary_metadata_budget_reaches_later_year_free_and_genre_query_familie
 def test_duration_and_live_checks_still_apply_to_curated_footage(accept, length):
     assert not accept(video(duration=length), FILM, curated=True)
     assert not accept(video(is_live=True), FILM, curated=True)
+
+
+@pytest.mark.parametrize("accept", [footage.candidate_ok, secondary_candidate_ok])
+@pytest.mark.parametrize("title,year,actor", [
+    ("Interview with the Vampire", 1994, "Tom Cruise"),
+    ("I'm Thinking of Ending Things", 2020, "Jesse Plemons"),
+])
+def test_excluded_label_words_inside_a_real_film_title_do_not_reject_its_trailer(accept, title, year, actor):
+    film = {**FILM, "title": title, "year": year, "cast": [actor], "homepage": "", "imdb_id": ""}
+    candidate = video(f"{title.upper()} ({year}) Official Trailer", description=f"Starring {actor}.")
+    assert accept(candidate, film)
+    assert not accept({**candidate, "title": candidate["title"] + " Interview"}, film)
+    assert not accept({**candidate, "title": candidate["title"] + " Ending Explained"}, film)
+
+
+@pytest.mark.parametrize("accept", [footage.candidate_ok, secondary_candidate_ok])
+@pytest.mark.parametrize("title", [
+    "Night Orchard (2025) Best Scenes Compilation",
+    "Night Orchard (2025) Fan Edit Trailer",
+    "Night Orchard (2025) Fan-Made Scenes Compilation",
+])
+def test_genuine_scene_compilations_and_fan_edits_can_supply_footage(accept, title):
+    assert accept(video(title), FILM)
+
+
+@pytest.mark.parametrize("accept", [footage.candidate_ok, secondary_candidate_ok])
+def test_exact_imdb_production_link_accepts_tracking_parameters_without_cast_or_director(accept):
+    film = {**FILM, "cast": [], "directors": [], "homepage": ""}
+    candidate = video(description="Production https://www.imdb.com/title/tt12345678/?ref_=tt_ov_i&utm_source=studio")
+    assert accept(candidate, film)
+    assert not accept({**candidate, "description": "https://www.imdb.com/title/tt99999999/?ref_=tt_ov_i"}, film)
+
+
+@pytest.mark.parametrize("accept", [footage.candidate_ok, secondary_candidate_ok])
+@pytest.mark.parametrize("homepage", [
+    "https://www.youtube.com/@NightOrchardStudio",
+    "https://www.youtube.com/channel/UCNightOrchard",
+    "https://vimeo.com/night-orchard",
+    "https://studio.example/films",
+    "https://studio.example/catalogue",
+    "https://studio.example/",
+    "https://www.netflix.com/browse",
+    "https://www.imdb.com/title/tt99999999/",
+])
+def test_a_shared_channel_or_catalogue_link_cannot_be_the_only_identity_proof(accept, homepage):
+    film = {**FILM, "cast": [], "directors": [], "homepage": homepage, "imdb_id": ""}
+    assert not accept(video(description=f"Official link: {homepage}"), film)
+
+
+@pytest.mark.parametrize("accept", [footage.candidate_ok, secondary_candidate_ok])
+@pytest.mark.parametrize("homepage", [
+    "https://studio.example/films/night-orchard",
+    "https://www.netflix.com/title/81234567",
+])
+def test_a_matching_dedicated_production_homepage_can_prove_identity_without_people(accept, homepage):
+    film = {**FILM, "cast": [], "directors": [], "homepage": homepage, "imdb_id": ""}
+    assert accept(video(description=f"Production page: {homepage}"), film)
+    assert not accept(video(description="Production page: https://studio.example/films/different-orchard"), film)
