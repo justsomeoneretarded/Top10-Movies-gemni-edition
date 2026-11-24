@@ -235,7 +235,7 @@ def _plot_fallback(facts: dict, rank: int | None = None) -> list[str]:
     title = str(visible.get("title") or "").strip()
     premise = next((visible[name].strip() for name in (
         "overview", "premise", "plot", "plot_summary", "synopsis", "storyline",
-        "wiki_plot", "wiki_synopsis", "research_plot", "story", "wiki_summary")
+        "wiki_plot", "wiki_synopsis", "research_plot", "story", "wiki_summary", "summary")
         if isinstance(visible.get(name), str) and visible[name].strip()), "")
     opening = f"Number {rank or facts.get('rank', 1)}: {title}." if title else ""
     return [text for text in (opening, premise) if text]
