@@ -103,7 +103,7 @@ def test_tv_requested_season_is_checked_even_for_curated_video(accept):
 @pytest.mark.parametrize("accept", [footage.candidate_ok, secondary_candidate_ok])
 def test_source_backed_release_years_accept_the_same_production_but_not_a_raw_year_list(accept):
     evidence = {
-        "year": 2026, "source": "https://api.themoviedb.org/3/movie/42/release_dates",
+        "year": 2026, "date": "2026-05-13", "source": "https://api.themoviedb.org/3/movie/42/release_dates",
         "kind": "theatrical", "identity": "movie/42",
     }
     candidate = video("Night Orchard 2026 Official Trailer")
