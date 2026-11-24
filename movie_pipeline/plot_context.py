@@ -39,6 +39,50 @@ _STORY_CONTINUATION = re.compile(
     r"(?:follows|centres on|centers on|is about)\b.*)$", re.I)
 
 
+# Limit automatic cast-tail cuts to complete lists of full names. A named
+# companion with an action or purpose remains plot, as does an ambiguous bare
+# first name; the meaning-led editor can decide those cases.
+_NAME_WORD = r"(?:(?:Mr|Mrs|Ms|Dr|Prof|St)\.|[A-Z][A-Za-z'’\-]*|[A-Z]\.)"
+_PERSON_NAME = rf"{_NAME_WORD}(?:\s+{_NAME_WORD})+"
+_CAST_TAIL = re.compile(
+    rf",\s+(?i:alongside)\s+{_PERSON_NAME}"
+    rf"(?:\s*(?:,\s*(?:(?i:and)\s+)?|(?i:and)\s+|&\s*){_PERSON_NAME})+"
+    r"(?P<punctuation>[.!?]?)$")
+_NAMED_ROLE = re.compile(
+    rf"^{_NAME_WORD}(?:\s+{_NAME_WORD})*(?:,\s*|\s+)"
+    r"(?i:a|an|the|who|whose)\s+\S")
+_INITIAL_END = re.compile(r"(?:^|\s)(?:[A-Za-z]\.)+$")
+_TITLE_END = re.compile(r"\b(?:Mr|Mrs|Ms|Dr|Prof|St)\.$", re.I)
+_SUFFIX_END = re.compile(r"\b(?:Jr|Sr)\.$", re.I)
+
+
+def _story_sentences(value: str) -> list[str]:
+    """Keep initials and titles attached to the following name or role."""
+    result = []
+    for part in re.split(r"(?<=[.!?])\s+", value.strip()):
+        if result and (
+                _INITIAL_END.search(result[-1]) or _TITLE_END.search(result[-1]) or
+                (_SUFFIX_END.search(result[-1]) and part[:1].islower())):
+            result[-1] += " " + part
+        else:
+            result.append(part)
+    return result
+
+
+def _role_plot(text: str) -> str:
+    role = re.search(r"\bas\s+(.+)", text, re.I)
+    if not role:
+        return ""
+    premise = role.group(1)
+    cast_tail = _CAST_TAIL.search(premise)
+    if cast_tail:
+        premise = premise[:cast_tail.start()].rstrip() + cast_tail["punctuation"]
+    if re.match(r"^(?:a|an|the)\s+\S", premise, re.I) or _NAMED_ROLE.match(premise):
+        return "The story follows " + premise
+    # "Stars Actor as Ada" is still only a credit, not a supplied storyline.
+    return ""
+
+
 def _story_sentence(sentence: str) -> str:
     text = sentence.strip()
     credit = _CREDIT_HEAD.match(text)
@@ -52,9 +96,8 @@ def _story_sentence(sentence: str) -> str:
         return retained[:1].upper() + retained[1:]
     if starring or catalogue:
         # Preserve a mixed actor/role premise without speaking the actor credit.
-        role = re.search(r"\bas\s+((?:a|an|the)\s+.+)", text, re.I)
-        if role:
-            return "The story follows " + role.group(1)
+        if premise := _role_plot(text):
+            return premise
     if credit:
         tail = text[credit.end():]
         explicit = bool(re.match(
@@ -77,7 +120,7 @@ def story_text(value: str) -> str:
     """Keep plot in mixed source text without replacing creative vocabulary."""
     if not isinstance(value, str):
         return ""
-    return " ".join(clean for sentence in re.split(r"(?<=[.!?])\s+", value.strip())
+    return " ".join(clean for sentence in _story_sentences(value)
                     if (clean := _story_sentence(sentence)))
 
 
