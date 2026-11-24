@@ -406,3 +406,12 @@ def test_credit_only_unused_quote_does_not_trigger_an_expansion_request():
     assert result["sections"] == draft()["sections"]
     record = next(row for row in result["package"]["depth_review"]["reviews"] if row["film"] == 0)
     assert record["action"] == "retained_no_supported_expansion"
+
+
+def test_credit_only_depth_repair_cannot_erase_existing_story():
+    writer = writer_with(assessment(), improvement([
+        "Number 1: Night Crossing.", "Directed by Jane Director."]))
+    result = repair(writer)
+    assert result["sections"] == draft()["sections"]
+    record = next(row for row in result["package"]["depth_review"]["reviews"] if row["film"] == 0)
+    assert record["action"] == "retained_invalid_repair"
