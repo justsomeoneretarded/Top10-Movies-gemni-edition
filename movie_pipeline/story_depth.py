@@ -16,7 +16,7 @@ import requests
 
 from .core import key, normalized, save_json
 from .timing import narration_words
-from .plot_context import remove_credit_sentences, story_text
+from .plot_context import plot_material, remove_credit_sentences, story_text
 
 POLICY_VERSION = 2
 STATUSES = ("adequate", "thin", "generic", "repetitive", "limited_material")
@@ -54,13 +54,16 @@ def _strings(value):
             yield from _strings(item)
 
 
-def _source_material(film):
-    from .script import film_facts, narration_material
-    facts = narration_material(film_facts(film))
-    # Visual labels illustrate the story; they are not evidence for new plot facts.
-    return {name: value for name, value in facts.items()
+def _evidence_material(facts):
+    # Identity, production history and visual guidance cannot support new events.
+    return {name: value for name, value in plot_material(facts).items()
             if name not in {"available_scenes", "title", "year", "kind", "genres", "keywords",
                             "characters", "creative_context", "requested_creative_context"}}
+
+
+def _source_material(film):
+    from .script import film_facts
+    return _evidence_material(film_facts(film))
 
 
 def _quote_supported(value, material):
@@ -75,7 +78,7 @@ def _quote_supported(value, material):
     # a caller supplies an unprojected mixed source paragraph.
     if normalized(story_text(quote)) != needle:
         return False
-    return any(needle in normalized(story_text(part)) for part in _strings(material))
+    return any(needle in normalized(story_text(part)) for part in _strings(_evidence_material(material)))
 
 
 def _review_paragraphs(section):
