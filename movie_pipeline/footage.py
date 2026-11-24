@@ -372,13 +372,16 @@ def _download_route(film: dict, root: Path, path: Path, height: int, common: dic
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([url])
             if not attempt.exists() or not 25 <= duration(attempt) <= 360:
+                stats.reject("download_file")
                 raise PipelineError("Downloaded trailer failed file/duration checks.")
             if attempt.stat().st_size > MAX_TRAILER_BYTES:
+                stats.reject("download_size")
                 raise PipelineError("Trailer exceeds the 800 MB per-film storage budget.")
             metadata = probe(attempt)
             video = next((stream for stream in metadata.get("streams", []) if stream.get("codec_type") == "video"), {})
             actual = effective_height(video.get("width"), video.get("height"))
             if not actual:
+                stats.reject("download_quality")
                 raise PipelineError("Downloaded trailer has no valid video dimensions.")
             if actual > best_quality:
                 _install_candidate(attempt, path, {"source": url, "title": info.get("title"), "channel": info.get("channel"),
