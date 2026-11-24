@@ -38,7 +38,8 @@ FACT_FIELDS = ("title", "year", "kind", "status", "release_date", "genres", "dir
                "runtime_minutes", "seasons", "episodes", "networks", "keywords", "overview", "tmdb_rating", "tmdb_votes",
                "wiki_summary", "wiki_production", "wiki_reception", "research_notes", "grounded_notes",
                "summary", "plot", "wiki_plot", "synopsis", "plot_summary", "storyline", "premise",
-               "story", "wiki_synopsis", "research_plot", "characters", "character_context", "creative_context")
+               "story", "wiki_synopsis", "research_plot", "characters", "character_context", "creative_context",
+               "requested_creative_context")
 
 
 _SCENES = re.compile(r'(,\s*)?"available_scenes":\s*\[(?:"(?:[^"\\]|\\.)*"|[\s,])*\](\s*,)?')
