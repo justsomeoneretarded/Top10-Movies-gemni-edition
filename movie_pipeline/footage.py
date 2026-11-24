@@ -10,57 +10,21 @@ from . import download_access
 from .core import PipelineError, duration, normalized, probe, save_json
 from .video_settings import export_size, require_disk
 
-REJECT = re.compile(r"\b(concept|ai.?generated|reaction|review|explained|deepfake|full (?:movie|episode|film))\b", re.IGNORECASE)
+from .media_discovery import (DiscoveryStats, REJECT, fair_candidates, identity_names,
+                              identity_ok, rejection_reason)
 MAX_TRAILER_BYTES = 800_000_000
 MAX_CANDIDATES = 8
 MAX_QUALITY_DOWNLOADS = 3
 
 
-def identity_names(film: dict) -> list[str]:
-    """People and networks that a genuine trailer for this title usually names (from TMDB)."""
-    names = [*film.get("cast", [])[:5], *film.get("directors", [])[:2], *film.get("creators", [])[:3],
-             *film.get("networks", [])[:3]]
-    return [str(name) for name in names if isinstance(name, str) and name.strip()]
-
-
-def identity_ok(info: dict, film: dict) -> bool:
-    """A searched video must name someone or something from the right title (cast, director,
-    creator or network), so a remake or another country's version with the same name is rejected."""
-    names = identity_names(film)
-    if not names:
-        return True  # nothing to check against
-    text = " " + normalized(" ".join(str(info.get(field) or "") for field in ("title", "description", "uploader", "channel"))
-                            + " " + " ".join(map(str, info.get("tags") or []))) + " "
-    for name in names:
-        words = normalized(name).split()
-        if not words:
-            continue
-        if f" {' '.join(words)} " in text or (len(words) > 1 and len(words[-1]) >= 4 and f" {words[-1]} " in text):
-            return True
-    return False
-
-
 def search_query(film: dict, extra: str = "official trailer") -> str:
-    """YouTube search text; network names are metadata, not mandatory query terms."""
+    """Legacy dated query helper; broad discovery uses editorial_policy.search_queries."""
     from .editorial_policy import season_hint
     return " ".join(str(part) for part in (film["title"], film["year"], season_hint(film), extra) if part)
 
 
 def candidate_ok(info: dict, film: dict, curated: bool = False) -> bool:
-    title = info.get("title", "")
-    length = info.get("duration") or 0
-    if REJECT.search(title) or info.get("is_live") or not 25 <= length <= 360:
-        return False
-    if curated:
-        return True
-    years = set(re.findall(r"\b(?:18|19|20)\d{2}\b", title)) - set(re.findall(r"\b(?:18|19|20)\d{2}\b", film["title"]))
-    if film.get("kind") != "tv" and film.get("year") and years and str(film["year"]) not in years:
-        return False
-    words = set(normalized(film["title"]).split())
-    candidate_words = set(normalized(title).split())
-    overlap = len(words & candidate_words) / max(1, len(words))
-    return (overlap >= 0.85 and bool(candidate_words & {"trailer", "teaser", "scene", "clip", "preview"})
-            and identity_ok(info, film))
+    return rejection_reason(info, film, curated=curated) is None
 
 
 def effective_height(width, height) -> float:
@@ -277,6 +241,7 @@ def download(film: dict, root: Path) -> Path:
             _download_route(film, root, target, height, download_access.options(base, route), yt_dlp,
                             state=state)
         except _RouteBlocked:
+            last_error = _blocked()
             if route == "direct" and download_access.fallback_proxy():
                 print(f"YouTube bot check on the direct route for {film['title']}; retrying through the fallback route.", flush=True)
             continue
@@ -312,7 +277,7 @@ def download(film: dict, root: Path) -> Path:
             _LOW_QUALITY_REFRESHES.add(refresh_key)
             _record_quality_attempt(path, "limited_source_available")
         return path
-    return _stills_or_raise(film, root, path, stills_cached, last_error or _blocked())
+    return _stills_or_raise(film, root, path, stills_cached, last_error or PipelineError("No trailer candidates were available on the configured routes."))
 
 def _stills_or_raise(film: dict, root: Path, path: Path, stills_cached: bool, error: Exception) -> Path:
     """When no trailer can be downloaded, use the film's TMDB images instead of stopping the video."""
@@ -325,8 +290,8 @@ def _stills_or_raise(film: dict, root: Path, path: Path, stills_cached: bool, er
     try:
         built = build(film, path, root)
     except Exception as exc:  # noqa: BLE001 -- report the original download failure
-        print(f"Stills fallback unavailable for {film.get('title')} ({type(exc).__name__}: {exc}).", flush=True)
-        raise error from exc
+        print(f"Stills fallback unavailable for {film.get('title')} ({type(exc).__name__}).", flush=True)
+        raise error from None
     notice("No trailer: using stills", f"{film.get('title')} ({film.get('year')}): no trailer could be downloaded "
            f"({type(error).__name__}); its section uses official TMDB images. Consider re-running or swapping this film.", "warning")
     return built
@@ -335,50 +300,53 @@ def _stills_or_raise(film: dict, root: Path, path: Path, stills_cached: bool, er
 def _download_route(film: dict, root: Path, path: Path, height: int, common: dict, yt_dlp, *, state: dict | None = None) -> Path:
     state = state if state is not None else {"attempts": 0, "best_quality": 0.0, "winning_route": None}
     candidates = []
-    for trailer in film["trailers"][:MAX_CANDIDATES]:
+    for trailer in film.get("trailers", [])[:MAX_CANDIDATES]:
         url = trailer_url(trailer)
-        if url and (url, True) not in candidates:
-            candidates.append((url, True))
-    # YouTube sources first; Vimeo remains available when YouTube refuses the runner.
-    candidates.sort(key=lambda entry: not _is_youtube(entry[0]))
-    errors = []
+        if url and url not in candidates:
+            candidates.append(url)
+    # Keep YouTube first, with Vimeo available after a route-specific bot check.
+    candidates.sort(key=lambda url: not _is_youtube(url))
+    stats = DiscoveryStats()
     ranked = []
     blocked = False
     seen = set()
 
-    def inspect(entries):
-        nonlocal blocked
-        for url, curated in entries:
-            if url in seen or len(seen) >= MAX_CANDIDATES or (blocked and _is_youtube(url)):
-                continue
-            seen.add(url)
-            try:
-                with yt_dlp.YoutubeDL(common) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                if info and candidate_ok(info, film, curated):
-                    ranked.append((advertised_quality(info, height), len(ranked), url, curated, info))
-            except (yt_dlp.utils.DownloadError, PipelineError, OSError, ValueError) as exc:
-                errors.append(type(exc).__name__)
-                if _bot_check(exc):
-                    blocked = True
+    def search(query):
+        if blocked:
+            return []
+        with yt_dlp.YoutubeDL({**common, "extract_flat": True}) as ydl:
+            result = ydl.extract_info(f"ytsearch4:{query}", download=False)
+        return [f"https://www.youtube.com/watch?v={entry['id']}"
+                for entry in (result or {}).get("entries", []) if isinstance(entry, dict)
+                and re.fullmatch(r"[\w-]{11}", str(entry.get("id", "")))]
 
-    inspect(candidates)
-    # If curated choices are missing or low quality, spend remaining metadata slots
-    # on verified official search matches. Search results never bypass title checks.
+    def search_error(exc):
+        nonlocal blocked
+        stats.error(exc)
+        blocked = blocked or _bot_check(exc)
+
     from .editorial_policy import search_queries
-    for query in search_queries(film, primary=True):
-        if blocked or len(seen) >= MAX_CANDIDATES or max((r[0] for r in ranked), default=0) >= height:
-            break
+    # One metadata result per dated, year-free and genre family before seconds.
+    for url, curated in fair_candidates(candidates, search_queries(film, primary=True), search,
+                                        limit=MAX_CANDIDATES, on_search_error=search_error):
+        if blocked and _is_youtube(url):
+            continue
+        seen.add(url)
+        stats.seen += 1
         try:
-            with yt_dlp.YoutubeDL({**common, "extract_flat": True}) as ydl:
-                result = ydl.extract_info(f"ytsearch4:{query}", download=False)
-            discovered = [(f"https://www.youtube.com/watch?v={entry['id']}", False)
-                          for entry in (result or {}).get("entries", []) if entry and re.fullmatch(r"[\w-]{11}", entry.get("id", ""))]
-            inspect(discovered)
+            with yt_dlp.YoutubeDL(common) as ydl:
+                info = ydl.extract_info(url, download=False)
+            reason = rejection_reason(info, film, curated=curated)
+            if reason:
+                stats.reject(reason)
+                continue
+            ranked.append((advertised_quality(info, height), len(ranked), url, curated, info))
         except (yt_dlp.utils.DownloadError, PipelineError, OSError, ValueError) as exc:
-            errors.append(type(exc).__name__)
-            blocked = blocked or _bot_check(exc)
+            stats.error(exc)
+            if _bot_check(exc):
+                blocked = True
     if blocked and not ranked:
+        print(f"Primary footage discovery: {stats.summary()}.", flush=True)
         raise _RouteBlocked()
     ranked.sort(key=lambda row: (-row[0], row[1]))
     best_quality = state["best_quality"]
@@ -400,6 +368,7 @@ def _download_route(film: dict, root: Path, path: Path, height: int, common: dic
                        "max_filesize": MAX_TRAILER_BYTES}
             require_disk(root)
             state["attempts"] += 1
+            stats.download_attempts += 1
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([url])
             if not attempt.exists() or not 25 <= duration(attempt) <= 360:
@@ -421,13 +390,14 @@ def _download_route(film: dict, root: Path, path: Path, height: int, common: dic
                 state["winning_route"] = state.get("route")
                 selected = True
         except (yt_dlp.utils.DownloadError, PipelineError, OSError, ValueError) as exc:
-            errors.append(type(exc).__name__)
+            stats.error(exc)
             if _bot_check(exc):
                 blocked = True
                 if selected:
                     break
         finally:
             _clean_candidate(attempt)
+    print(f"Primary footage discovery: {stats.summary()}.", flush=True)
     if selected:
         print(f"Selected trailer provides about {best_quality:.0f}p of landscape detail; final export quality will be chosen after all trailers are checked.", flush=True)
         return path
@@ -435,4 +405,4 @@ def _download_route(film: dict, root: Path, path: Path, height: int, common: dic
     path.with_suffix(".json").unlink(missing_ok=True)
     if blocked:
         raise _RouteBlocked()
-    raise PipelineError(f"No usable trailer for {film['title']} ({film['year']}). Tried {len(seen)} candidates. YouTube access restrictions, unavailable trailers or format changes may be responsible. No movie was substituted. Failures: {', '.join(errors)}")
+    raise PipelineError(f"No usable trailer for {film['title']} ({film['year']}). {stats.summary()}. No movie was substituted.")

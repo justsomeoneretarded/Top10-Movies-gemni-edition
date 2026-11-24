@@ -31,6 +31,8 @@ def research_for(rows, *, kind="tv", aliases=None, other_rows=()):
                 return value
             return {"id": identifier, "titles" if kind == "movie" else "results":
                     [{"title": title} for title in value]}
+        if endpoint.endswith("/release_dates"):
+            return {"id": identifier, "results": []}
         assert endpoint == f"{kind}/{identifier}", f"Unexpected endpoint: {endpoint}"
         row = next(row for row in rows if row["id"] == identifier)
         return {**row, "overview": "Two classmates navigate their different worlds.",
@@ -75,14 +77,17 @@ def test_exact_alias_cannot_accept_wrong_year_remake(kind):
     research = research_for([row], kind=kind, aliases={row["id"]: ["Maxton Hall"]})
     with pytest.raises(PipelineError, match="Could not verify"):
         research.resolve(FilmInput("Maxton Hall", 2024))
-    assert [call.args[0] for call in research.get.call_args_list] == [f"search/{kind}"]
+    expected = [f"search/{kind}"]
+    if kind == "movie":
+        expected += [f"movie/{row['id']}/alternative_titles", f"movie/{row['id']}/release_dates"]
+    assert [call.args[0] for call in research.get.call_args_list] == expected
 
 
 @pytest.mark.parametrize("title,aliases", [
     ("Maxton Hall - Behind the Scenes", []),
     ("Maxton Hall - Behind the Scenes", ["Maxton Hall Behind the Scenes"]),
-    ("Maxton Hall Reunion", ["Maxton Hall"]),
-    ("Maxton Hallway - The World Between Us", ["Maxton Hall"]),
+    ("Maxton Hall Reunion", ["Maxton Hall Reunion"]),
+    ("Maxton Hallway - The World Between Us", ["Maxton Hallway"]),
 ])
 def test_shared_prefix_without_exact_delimited_provider_alias_is_rejected(title, aliases):
     row = record(title=title)

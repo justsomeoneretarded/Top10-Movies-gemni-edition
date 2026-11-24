@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from difflib import SequenceMatcher
@@ -11,6 +12,8 @@ from urllib3.util.retry import Retry
 
 from .core import fold_accents, FilmInput, PipelineError, normalized, save_json
 from .wiki import wikipedia_context
+from .release_identity import (RELEASE_IDENTITY_VERSION, tmdb_identity,
+                               tmdb_release_evidence, verified_release_years)
 from .gemini import GeminiUnavailable, enabled, record_event
 from .gemini_research import research_film
 from .public_research import title_key
@@ -100,7 +103,7 @@ class Research:
                             if any(isinstance(name, str) and normalized(name) in verified_names for name in canonical):
                                 score = 1.0
                             date = row.get("release_date" if kind == "movie" else "first_air_date", "")
-                            if score >= 0.88 and date[:4].isdigit() and abs(int(date[:4]) - item.year) <= 2:
+                            if score >= 0.88:
                                 row = {**row, "_year_evidence": f"Wikidata {entity['id']} publication date", "_imdb_id": imdb, "_identity_source": f"https://www.wikidata.org/wiki/{entity['id']}"}
                                 candidates.append((score, kind, row))
             return candidates
@@ -110,7 +113,6 @@ class Research:
 
     def resolve(self, item: FilmInput) -> dict:
         candidates = []
-        nearby = []
         selected_kind = getattr(self, "selected_kind", None)
         kinds = ((selected_kind,) if selected_kind in ("movie", "tv") else
                  ("tv", "movie") if getattr(self, "preferred_kind", "movie") == "tv" else ("movie", "tv"))
@@ -118,40 +120,43 @@ class Research:
             alias_checks = 0
             data = self.get(f"search/{kind}", query=item.title, language="en-US", include_adult="false")
             results = list(data.get("results", []))
-            if fold_accents(item.title) != item.title:  # 'Shōgun' typed with a macron: also search 'Shogun'
+            if fold_accents(item.title) != item.title:
                 plain = self.get(f"search/{kind}", query=fold_accents(item.title), language="en-US", include_adult="false")
                 known = {row.get("id") for row in results}
                 results += [row for row in plain.get("results", []) if row.get("id") not in known]
             for found in results:
+                if (not isinstance(found, dict) or type(found.get("id")) is not int or found["id"] <= 0):
+                    continue
                 date = found.get("release_date" if kind == "movie" else "first_air_date", "")
+                date = date if isinstance(date, str) else ""
                 similarity = self.title_score(item, found, kind)
-                if date[:4] == str(item.year) and similarity < 0.88 and alias_checks < 5:
-                    names = (found.get("title" if kind == "movie" else "name", ""),
-                             found.get("original_title" if kind == "movie" else "original_name", ""))
-                    # A delimited subtitle only narrows the bounded lookup; it is not proof.
-                    prefixes = [re.split(r"\s+[-–—]\s+|:\s*", name, maxsplit=1)
-                                for name in names if isinstance(name, str)]
-                    if any(len(parts) == 2 and normalized(parts[0]) == normalized(item.title)
-                           and normalized(parts[1]) for parts in prefixes):
-                        alias_checks += 1
-                        if self.title_alias_matches(item, found, kind):
-                            similarity = 1.0
-                            print(f"Verified exact TMDB alternative title for {item.title} ({item.year}) on {kind}/{found['id']}.", flush=True)
-                if date[:4] == str(item.year) and similarity >= 0.88:
+                # Any exact provider alias can prove the identity in either
+                # direction. A shared prefix or stripped brand name cannot.
+                if similarity < 0.88 and alias_checks < 5 and (date[:4] == str(item.year) or kind == "movie"):
+                    alias_checks += 1
+                    if self.title_alias_matches(item, found, kind):
+                        similarity = 1.0
+                        found = {**found, "_verified_alias": item.title}
+                if similarity < 0.88:
+                    continue
+                eligible = date[:4] == str(item.year)
+                if not eligible and kind == "movie":
+                    # Check this earlier result's actual festival/regional dates
+                    # before considering a later same-title exact-year record.
+                    try:
+                        releases = self.get(f"movie/{found['id']}/release_dates")
+                        evidence = tmdb_release_evidence(releases, kind, found["id"])
+                    except (PipelineError, requests.RequestException, ValueError, TypeError):
+                        evidence = []
+                    if any(row["year"] == item.year for row in evidence):
+                        eligible = True
+                        found = {**found, "_year_evidence": "TMDB dated festival/regional release record",
+                                 "_release_year_evidence": evidence}
+                if eligible:
                     candidates.append((similarity, kind, found))
                     break
-                elif kind == "movie" and date[:4].isdigit() and abs(int(date[:4]) - item.year) <= 2 and similarity >= 0.88:
-                    nearby.append((similarity, kind, found))
             if candidates:
                 break
-        if not candidates:
-            # Festival premieres and regional theatrical dates can precede the search year.
-            for similarity, kind, found in nearby[:5]:
-                releases = self.get(f"movie/{found['id']}/release_dates")
-                dated = [r.get("release_date", "") for country in releases.get("results", []) for r in country.get("release_dates", [])]
-                if any(date[:4] == str(item.year) for date in dated):
-                    candidates.append((similarity, kind, {**found, "_year_evidence": "TMDB dated festival/regional release record"}))
-                    break
         if not candidates:
             candidates = self.wikidata_candidates(item)
             if selected_kind:
@@ -165,7 +170,10 @@ class Research:
         print(f"Selected first matching TMDB result: {item.title} ({item.year}) -> {kind}/{match['id']}.", flush=True)
         if match.get("_year_evidence"):
             print(f"Verified {item.title} ({item.year}) via {match['_year_evidence']} (search release date: {match.get('release_date', '')}).", flush=True)
-        details = self.get(f"{kind}/{match['id']}", append_to_response="videos,credits,external_ids,keywords,images", include_image_language="en,null", language="en-US")
+        details = self.get(f"{kind}/{match['id']}", append_to_response="videos,credits,external_ids,keywords,images,release_dates", include_image_language="en,null", language="en-US")
+        if (not isinstance(details, dict) or type(details.get("id")) is not int
+                or details["id"] != match["id"]):
+            raise PipelineError("TMDB details do not belong to the selected production.")
         videos = details.get("videos", {}).get("results", [])
         # Original-language trailers may exist when English-localized metadata has none.
         if not videos:
@@ -180,9 +188,23 @@ class Research:
         if not overview:
             raise PipelineError(f"No factual synopsis available for {item.title}; refusing to invent one.")
         crew = details.get("credits", {}).get("crew", [])
+        release_evidence = list(match.get("_release_year_evidence", []))
+        release_evidence += tmdb_release_evidence(details.get("release_dates", {}), kind, match["id"])
+        canonical_source = f"https://www.themoviedb.org/{kind}/{match['id']}"
+        for date in (match.get("release_date" if kind == "movie" else "first_air_date"),
+                     details.get("release_date" if kind == "movie" else "first_air_date")):
+            if isinstance(date, str) and re.match(r"^\d{4}-\d{2}-\d{2}(?:T|$)", date):
+                release_evidence.append({"year": int(date[:4]), "source": canonical_source,
+                                         "kind": "search" if kind == "movie" else "first_air",
+                                         "identity": f"{kind}/{match['id']}", "date": date})
         return {
             "title": details.get("title", details.get("name")), "year": item.year,
-            "kind": kind, "id": match["id"], "overview": overview,
+            "kind": kind, "id": match["id"], "tmdb_id": match["id"], "overview": overview,
+            "requested_title": item.title, "input_year": item.year,
+            "release_identity_version": RELEASE_IDENTITY_VERSION,
+            "release_year_evidence": release_evidence,
+            "identity_aliases": list(dict.fromkeys([item.title, details.get("title", details.get("name", item.title))])),
+            "homepage": details.get("homepage"),
             "release_date": details.get("release_date", details.get("first_air_date")),
             "genres": [g["name"] for g in details.get("genres", [])],
             "directors": [c["name"] for c in crew if c.get("job") == "Director"],
@@ -198,6 +220,13 @@ class Research:
         }
 
     def collect(self, items: list[FilmInput], path: Path) -> list[dict]:
+        path = Path(path)
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            cached = None
+        if research_cache_valid(cached, items, getattr(self, "selected_kind", None)):
+            return cached
         films = []
         for item in items:
             print(f"Research: {item.title} ({item.year})", flush=True)
@@ -233,6 +262,9 @@ class Research:
                                   and metadata.get("source") == f"https://www.themoviedb.org/{film['kind']}/{identifier}"
                                   and title_key(str(metadata.get("title", ""))) in aliases
                                   and (film.get("tmdb_id") is None or film["tmdb_id"] == identifier))
+                    if (film.get("imdb_id") and metadata.get("imdb_id")
+                            and film["imdb_id"] != metadata["imdb_id"]):
+                        compatible = False
                     for role in ("cast", "directors"):
                         known = {normalized(name) for name in film.get(role, []) if isinstance(name, str)}
                         found = {normalized(name) for name in metadata.get(role, []) if isinstance(name, str)}
@@ -240,6 +272,9 @@ class Research:
                             compatible = False
                     if compatible:
                         film["tmdb_id"] = identifier
+                        film["release_year_evidence"] = [
+                            *film.get("release_year_evidence", []),
+                            *metadata.get("release_year_evidence", [])]
                         for name in ("trailers", "clips", "backdrops", "posters", "cast_profiles", "networks",
                                      "companies", "release_date", "status", "imdb_id", "runtime_minutes"):
                             if metadata.get(name):
@@ -257,9 +292,41 @@ class Research:
                 notes = wikipedia_context(film)
                 film.update(notes)
                 print(f"Wikipedia notes for {film['title']}: {', '.join(k for k in notes if k != 'wiki_url') or 'none found'}.", flush=True)
+            film["requested_title"] = item.title
+            film["input_year"] = item.year
+            film["release_identity_version"] = RELEASE_IDENTITY_VERSION
+            if not isinstance(film.get("release_year_evidence"), list):
+                film["release_year_evidence"] = []
+            film["release_years"] = sorted(verified_release_years(film))
             films.append(film)
         save_json(path, films)
         return films
+
+
+def research_cache_valid(films, items, selected_kind=None) -> bool:
+    """Only current identity-verified records may bypass research."""
+    if not isinstance(films, list) or len(films) != len(items):
+        return False
+    for film, item in zip(films, items):
+        if (not isinstance(film, dict) or type(film.get("release_identity_version")) is not int
+                or film["release_identity_version"] != RELEASE_IDENTITY_VERSION
+                or normalized(str(film.get("requested_title", ""))) != normalized(item.title)
+                or type(film.get("input_year")) is not int or film["input_year"] != item.year
+                or type(film.get("year")) is not int or film["year"] != item.year
+                or film.get("kind") not in {"movie", "tv"}
+                or selected_kind in {"movie", "tv"} and film["kind"] != selected_kind
+                or not isinstance(film.get("title"), str) or not film["title"].strip()
+                or not isinstance(film.get("overview"), str) or not film["overview"].strip()
+                or not isinstance(film.get("release_year_evidence"), list)):
+            return False
+        if film.get("research_backend") == "gemini":
+            if (not isinstance(film.get("identity_evidence"), str) or not film["identity_evidence"]
+                    or not isinstance(film.get("research_evidence"), list) or not film["research_evidence"]):
+                return False
+        elif (not tmdb_identity(film)
+              or film.get("source") != f"https://www.themoviedb.org/{tmdb_identity(film)}"):
+            return False
+    return True
 
 
 def extra_facts(details: dict, kind: str) -> dict:
