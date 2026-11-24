@@ -99,7 +99,7 @@ def identity_ok(info: dict, film: dict) -> bool:
     linked = {_production_url(url) for url in re.findall(r"https?://[^\s<>\"']+", raw)}
     if expected & linked:
         return True
-    return not names and not expected  # no identity metadata was available to compare
+    return not names and not expected and not film.get("homepage") and not film.get("imdb_id")
 
 
 def rejection_reason(info: dict, film: dict, *, curated: bool = False, secondary: bool = False) -> str | None:
