@@ -21,4 +21,4 @@ jobs:
           AI_BACKEND: local
           GEMINI_FREE_ONLY: 'true'
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
-        run: python scripts/verify_live_discovery.py
+        run: python -m scripts.verify_live_discovery
