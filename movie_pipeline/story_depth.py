@@ -130,7 +130,7 @@ def _assessment_rows(data, count):
 
 def repair_depth(writer, title, brief, films, script, *, target_seconds,
                  estimated_seconds=None, trailer_seconds=0, automatic=True, max_repairs=3):
-    from .script import (_editorial_issue, _section_issue, aligned_delivery,
+    from .script import (_editorial_issue, _has_review_body, _section_issue, aligned_delivery,
                          film_facts, narration_material, plan_facts)
     result = deepcopy(script)
     package = result.setdefault("package", {})
@@ -274,7 +274,8 @@ def repair_depth(writer, title, brief, films, script, *, target_seconds,
                 facts = narration_material(film_facts(films[entry["film"]]))
                 facts.update(rank=entry["rank"], other_titles=[
                     film["title"] for i, film in enumerate(films) if i != entry["film"]])
-                if (not paragraphs or normalized(entry["title"]) not in normalized(" ".join(paragraphs))
+                if (not paragraphs or not _has_review_body(paragraphs, facts)
+                        or normalized(entry["title"]) not in normalized(" ".join(paragraphs))
                         or _section_issue(paragraphs, facts, opening=False, closing=False)
                         or _editorial_issue(paragraphs)):
                     record["action"] = "retained_invalid_repair"
