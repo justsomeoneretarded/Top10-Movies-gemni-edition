@@ -21,6 +21,10 @@ assert film.get("id")==1339713 and film.get("kind")=="movie", "Wrong production 
 years=verified_release_years(film)
 assert {2025,2026}.issubset(years), "Lost verified festival/theatrical dates"
 print("LIVE_RELEASE "+json.dumps({"title":film.get("title"),"id":film.get("id"),"year":film.get("year"),"verified_years":sorted(years),"backdrops":len(film.get("backdrops",[]))}))
+cinema=research.resolve(FilmInput("Obsession",2026))
+assert cinema.get("id")==1339713 and {2025,2026}.issubset(verified_release_years(cinema)), "Lost dates from nested release metadata"
+print("LIVE_NESTED_RELEASE verified2026 record retains2025 festival evidence")
+
 queries=search_queries(film,primary=True)
 year_free=[q for q in queries if not any(str(y) in q for y in years)]
 assert year_free and any("scene" in q.lower() or "trailer" in q.lower() for q in year_free)

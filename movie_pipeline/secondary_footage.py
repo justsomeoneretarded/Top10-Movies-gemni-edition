@@ -187,6 +187,8 @@ def _download_secondary(film: dict, root: Path, primary: Path, minimum_size: tup
     blocked = False
     stats = DiscoveryStats()
     excluded_urls = {source, *accepted_sources}
+    excluded_ids = {_primary_id(value) for value in excluded_urls} - {""}
+    excluded_urls.update(f"https://www.youtube.com/watch?v={identifier}" for identifier in excluded_ids)
 
     def search(query):
         if blocked:
@@ -213,7 +215,7 @@ def _download_secondary(film: dict, root: Path, primary: Path, minimum_size: tup
                                         limit=MAX_METADATA, excluded=excluded_urls,
                                         should_stop=lambda: blocked, on_search_error=search_error):
         # Exclude a primary URL even when its saved form was a shortened watch URL.
-        if _primary_id(url) in {_primary_id(value) for value in excluded_urls}:
+        if _primary_id(url) in excluded_ids:
             continue
         stats.seen += 1
         try:
