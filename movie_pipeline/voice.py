@@ -430,13 +430,16 @@ def _number_spelling(value: int) -> str:
 
 
 def sound_key(token: str) -> str:
-    """A rough pronunciation key: 'Dredd'/'dread' give 'drd', 'Carrie'/'carry' give 'kr'. Empty for short words."""
+    """A rough pronunciation key: 'Dredd'/'dread' give 'drd', 'Carrie'/'carry' give 'kr',
+    'Bandidos'/'Banditos' match. Empty for short words."""
     word = re.sub(r"[^a-z]", "", token.lower())
     if len(word) < 4:
         return ""
     for pattern, replacement in (("ph", "f"), ("ck", "k"), ("gh", "g"), ("q", "k"), ("c", "k"), ("z", "s"), ("x", "ks")):
         word = word.replace(pattern, replacement)
     key = word[0] + re.sub(r"[aeiouyhw]", "", word[1:])
+    # Voiced and unvoiced pairs are easily confused by speech recognition (Bandidos/Banditos).
+    key = key.translate(str.maketrans("dbgvs", "tpkfs"))
     key = re.sub(r"(.)\1+", r"\1", key)
     # Longer words may have a two-letter key (Carrie/carry); short ones need three (no 'core').
     return key if len(key) >= 3 or (len(word) >= 5 and len(key) >= 2) else ""
