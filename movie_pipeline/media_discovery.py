@@ -5,7 +5,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .core import normalized
 from .release_identity import verified_release_years
@@ -14,7 +14,7 @@ REJECT = re.compile(
     r"\b(concept|ai[\s_-]?(?:generated|trailer)|generated\s+(?:by|with)\s+ai|"
     r"reaction|review|explained|deepfake|full (?:movie|episode|film)|"
     r"behind the scenes|making of|interview|breakdown|recap|ending|easter eggs?|"
-    r"ranked|ranking|top \d+|compilation|parody|fan theory|edit audio|slowed|reverb)\b",
+    r"ranked|ranking|top \d+|parody|fan theory|edit audio|slowed|reverb)\b",
     re.IGNORECASE,
 )
 FOOTAGE_WORDS = {"trailer", "teaser", "clip", "clips", "scene", "scenes", "preview", "sneak", "peek", "promo"}
@@ -47,9 +47,36 @@ def _production_url(value: str) -> str:
         path = parts.path.rstrip("/")
         if not path or path == "/":
             return ""
-        return urlunsplit(("https", host, path, parts.query, ""))
+        query = parts.query
+        if (host == "imdb.com" and re.fullmatch(r"/title/tt\d{5,12}", path)
+                or host in {"netflix.com", "www.netflix.com"} and re.fullmatch(r"/title/\d+", path)):
+            query = ""
+        else:
+            query = urlencode([(key, value) for key, value in parse_qsl(query, keep_blank_values=True)
+                               if not key.lower().startswith("utm_")
+                               and key.lower() not in {"ref", "ref_", "fbclid", "gclid"}])
+        return urlunsplit(("https", host, path, query, ""))
     except (TypeError, ValueError):
         return ""
+
+
+def _verified_homepage(film: dict) -> str:
+    """Require a production page, not a channel, studio root or shared catalogue."""
+    url = _production_url(str(film.get("homepage") or ""))
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    if parts.hostname in {"youtube.com", "youtu.be", "vimeo.com"}:
+        return ""
+    if parts.hostname == "imdb.com" and re.fullmatch(r"/title/tt\d{5,12}", parts.path):
+        return url if parts.path.rsplit("/", 1)[-1] == str(film.get("imdb_id") or "") else ""
+    if parts.hostname == "netflix.com" and re.fullmatch(r"/title/\d+", parts.path):
+        return url
+    slug = normalized(str(film.get("title") or ""))
+    # Exact contiguous title tokens in a dedicated path distinguish a film page
+    # from /films, /catalogue or another production on the same studio host.
+    path = " " + normalized(parts.path) + " "
+    return url if slug and " " + slug + " " in path else ""
 
 
 def identity_ok(info: dict, film: dict) -> bool:
@@ -59,9 +86,12 @@ def identity_ok(info: dict, film: dict) -> bool:
     if isinstance(tags, list):
         raw += " " + " ".join(map(str, tags))
     text = " " + normalized(raw) + " "
-    if any(" " + normalized(name) + " " in text for name in names if normalized(name)):
-        return True
-    expected = {_production_url(str(film.get("homepage") or ""))}
+    for name in names:
+        words = normalized(name).split()
+        if words and (" " + " ".join(words) + " " in text
+                      or len(words) > 1 and len(words[-1]) >= 4 and " " + words[-1] + " " in text):
+            return True
+    expected = {_verified_homepage(film)}
     imdb = str(film.get("imdb_id") or "")
     if re.fullmatch(r"tt\d{5,12}", imdb):
         expected.add("https://imdb.com/title/" + imdb)
@@ -77,7 +107,10 @@ def rejection_reason(info: dict, film: dict, *, curated: bool = False, secondary
     if not isinstance(info, dict) or not isinstance(info.get("title"), str):
         return "missing_metadata"
     title = info["title"]
-    if REJECT.search(title):
+    # Content labels can be excluded without banning films whose actual title
+    # contains words such as Interview, Ending, Review or Concept.
+    label = re.sub(re.escape(str(film.get("title") or "")), "", title, flags=re.I) if film.get("title") else title
+    if REJECT.search(label):
         return "excluded_content"
     if info.get("is_live"):
         return "live"
