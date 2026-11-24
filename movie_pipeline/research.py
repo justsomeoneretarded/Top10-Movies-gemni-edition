@@ -262,6 +262,9 @@ class Research:
                                   and metadata.get("source") == f"https://www.themoviedb.org/{film['kind']}/{identifier}"
                                   and title_key(str(metadata.get("title", ""))) in aliases
                                   and (film.get("tmdb_id") is None or film["tmdb_id"] == identifier))
+                    if (film.get("imdb_id") and metadata.get("imdb_id")
+                            and film["imdb_id"] != metadata["imdb_id"]):
+                        compatible = False
                     for role in ("cast", "directors"):
                         known = {normalized(name) for name in film.get(role, []) if isinstance(name, str)}
                         found = {normalized(name) for name in metadata.get(role, []) if isinstance(name, str)}
@@ -269,6 +272,9 @@ class Research:
                             compatible = False
                     if compatible:
                         film["tmdb_id"] = identifier
+                        film["release_year_evidence"] = [
+                            *film.get("release_year_evidence", []),
+                            *metadata.get("release_year_evidence", [])]
                         for name in ("trailers", "clips", "backdrops", "posters", "cast_profiles", "networks",
                                      "companies", "release_date", "status", "imdb_id", "runtime_minutes"):
                             if metadata.get(name):
