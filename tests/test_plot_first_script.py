@@ -140,7 +140,10 @@ def test_partial_writer_passes_only_story_plan_fields_into_the_review():
         "who_for": "Fans of sophisticated cinema", "comparison_anchor": "Another film"}}})
     writer.narration = Mock(return_value=["Number 1: Example.", FILM["overview"]])
     writer.edit = lambda topic, brief, role, facts, paragraphs, **kwargs: (paragraphs, ["normal"] * len(paragraphs))
-    result = writer.write("Top thrillers", "Plot first", [FILM], only={"film-0"}, automatic=True)
+    # Isolate the plot-context projection in one bounded narration request.
+    result = writer.write("Top thrillers", "Plot first", [FILM], target_seconds=90,
+                          only={"film-0"}, automatic=True)
+    writer.narration.assert_called_once()
     facts = writer.narration.call_args.args[3]
     assert set(facts["episode_plan"]) == {"hook", "standout_facts", "standout_scene"}
     assert "directors" not in facts and "cast" not in facts
