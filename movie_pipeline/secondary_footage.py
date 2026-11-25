@@ -16,11 +16,7 @@ from . import download_access
 from .footage import MAX_TRAILER_BYTES, _bot_check, _clean_candidate
 from .video_settings import export_size, require_disk
 
-REJECT = re.compile(r"\b(concept|ai[ -]?generated|reaction|review|explained|deepfake|full (?:movie|episode|film)|"
-                    r"behind the scenes|making of|interview|breakdown|recap|ending|easter eggs?|ranked|ranking|top \d+|"
-                    r"compilation|parody|fan theory|edit audio|slowed|reverb)\b", re.IGNORECASE)
-# Words that mark official footage: trailers and teasers, and single scenes or clips.
-FOOTAGE_WORDS = {"trailer", "teaser", "clip", "clips", "scene", "scenes", "preview", "sneak", "peek", "promo"}
+from .media_discovery import (DiscoveryStats, FOOTAGE_WORDS, REJECT, fair_candidates, rejection_reason)
 # What a scene search asks for, per genre (an action list wants chases and fights, a comedy funny scenes).
 SCENE_SEARCH = {"action": "action scene", "adventure": "action scene", "thriller": "scene", "scifi": "scene",
                 "fantasy": "battle scene", "horror": "scary scene", "comedy": "funny scene", "romance": "scene",
@@ -31,34 +27,7 @@ MAX_DOWNLOADS = 3
 
 
 def secondary_candidate_ok(info: dict, film: dict, curated: bool = False) -> bool:
-    title = info.get("title", "")
-    if not isinstance(title, str) or REJECT.search(title) or info.get("is_live"):
-        return False
-    length = info.get("duration") or 0
-    # Clips are often 20-60 s; anything shorter is a logo, promo or fragment. Over 6 minutes is not a clip.
-    if not isinstance(length, (int, float)) or not 20 <= length <= 360:
-        return False
-    years = set(re.findall(r"\b(?:18|19|20)\d{2}\b", title))
-    years -= set(re.findall(r"\b(?:18|19|20)\d{2}\b", film["title"]))
-    if film.get("kind") != "tv" and years and str(film["year"]) not in years:
-        return False
-    requested = film.get("requested_season")
-    if isinstance(requested, dict):
-        requested=requested.get("season_number")
-    labelled=re.findall(r"\bseason\s+(\d+)\b|\bs(\d{1,2})e\d+", title, re.I)
-    if str(requested).isdigit() and labelled and all(int(a or b) != int(requested) for a,b in labelled):
-        return False
-    if curated:
-        return True
-    expected = set(normalized(film["title"]).split())
-    found = set(normalized(title).split())
-    overlap = len(expected & found)/max(1, len(expected))
-    if overlap < .85 or not found & FOOTAGE_WORDS:  # a scene clip need not say 'trailer'
-        return False
-    from .footage import identity_ok
-    if not identity_ok(info, film):
-        return False  # same name, different title (a remake or another country's version)
-    return True  # A genuine matching scene need not come from a verified uploader.
+    return rejection_reason(info, film, curated=curated, secondary=True) is None
 
 
 def _hashes(path: Path) -> list[int]:
@@ -214,50 +183,58 @@ def _download_secondary(film: dict, root: Path, primary: Path, minimum_size: tup
     # Optional extra footage uses whichever route already worked for primary trailers.
     common = download_access.options({'quiet':True,'no_warnings':True,'noplaylist':True,'socket_timeout':12,'retries':1,
                                       'fragment_retries':1,'js_runtimes':{'node':{}}}, download_access.routes()[0])
-    seen = {_primary_id(source), *(_primary_id(url) for url in accepted_sources)}
-    excluded_count = len(seen)
     ranked = []
     blocked = False
+    stats = DiscoveryStats()
+    excluded_urls = {source, *accepted_sources}
+    excluded_ids = {_primary_id(value) for value in excluded_urls} - {""}
+    excluded_urls.update(f"https://www.youtube.com/watch?v={identifier}" for identifier in excluded_ids)
 
-    def inspect(entries):
+    def search(query):
+        if blocked:
+            return []
+        with yt_dlp.YoutubeDL({**common, "extract_flat": True}) as ydl:
+            result = ydl.extract_info(f"ytsearch4:{query}", download=False)
+        return [f"https://www.youtube.com/watch?v={entry['id']}"
+                for entry in (result or {}).get("entries", []) if isinstance(entry, dict)
+                and re.fullmatch(r"[\w-]{11}", str(entry.get("id", "")))]
+
+    def search_error(exc):
         nonlocal blocked
-        for identifier,curated in entries:
-            if identifier in seen or len(seen)-excluded_count >= MAX_METADATA or not re.fullmatch(r'[\w-]{11}', identifier):
-                continue
-            seen.add(identifier)
-            url = f'https://www.youtube.com/watch?v={identifier}'
-            try:
-                with yt_dlp.YoutubeDL(common) as ydl:
-                    info = ydl.extract_info(url,download=False)
-                if info and secondary_candidate_ok(info,film,curated):
-                    quality = _quality(info,minimum_size,cap)
-                    if quality is not None:
-                        ranked.append((quality,len(ranked),url,curated,info))
-            except (yt_dlp.utils.DownloadError,PipelineError,OSError,ValueError) as exc:
-                # Primary footage already exists. A secondary bot check is never fatal.
-                if _bot_check(exc):
-                    blocked = True
-                    break
-                continue
+        stats.error(exc)
+        blocked = blocked or _bot_check(exc)
 
-    # Official TMDB trailers, teasers and clips (trusted: the studio's own uploads) come before any search.
-    # Clips first: a single studio scene is far more likely to add new footage than another trailer cut.
-    curated = [*film.get('clips', []), *film.get('trailers', [])]
-    inspect([(video.get('key',''),True) for video in curated[:min(4,MAX_METADATA)] if video.get('site','YouTube') == 'YouTube'])
-    # Reserve actual metadata capacity for fan edits when curated discovery has few options.
-    # Then searches: scenes that fit the list's genre (chases and fights for action, funny scenes for
-    # comedy), then other trailers. Searched results need not use verified uploaders but must name the
-    # right title, year and cast (secondary_candidate_ok).
+    # Keep this optional pool independent from primary discovery and reservations.
+    # One clip/curated choice, then one unique candidate per search family first.
+    curated = [*film.get("clips", []), *film.get("trailers", [])]
+    curated_urls = [f"https://www.youtube.com/watch?v={video['key']}" for video in curated
+                    if video.get("site", "YouTube") == "YouTube"
+                    and re.fullmatch(r"[\w-]{11}", str(video.get("key", "")))]
     from .editorial_policy import search_queries
-    for query in search_queries(film):
-        if blocked or len(seen)-excluded_count >= MAX_METADATA:
-            break
+    for url, curated in fair_candidates(curated_urls, search_queries(film), search,
+                                        limit=MAX_METADATA, excluded=excluded_urls,
+                                        should_stop=lambda: blocked, on_search_error=search_error):
+        # Exclude a primary URL even when its saved form was a shortened watch URL.
+        if _primary_id(url) in excluded_ids:
+            continue
+        stats.seen += 1
         try:
-            with yt_dlp.YoutubeDL({**common,'extract_flat':True}) as ydl:
-                result = ydl.extract_info(f"ytsearch4:{query}", download=False)
-            inspect([(entry.get('id',''),False) for entry in (result or {}).get('entries',[]) if entry][:2])
-        except (yt_dlp.utils.DownloadError,PipelineError,OSError,ValueError):
-            blocked = True
+            with yt_dlp.YoutubeDL(common) as ydl:
+                info = ydl.extract_info(url, download=False)
+            reason = rejection_reason(info, film, curated=curated, secondary=True)
+            if reason:
+                stats.reject(reason)
+                continue
+            quality = _quality(info, minimum_size, cap)
+            if quality is None:
+                stats.reject("quality")
+                continue
+            ranked.append((quality, len(ranked), url, curated, info))
+        except (yt_dlp.utils.DownloadError, PipelineError, OSError, ValueError) as exc:
+            stats.error(exc)
+            if _bot_check(exc):
+                blocked = True
+                break
     # Prefer a useful single scene, then quality; uploader status is not a gate.
     ranked.sort(key=lambda row:(not (set(normalized(str(row[4].get('title',''))).split()) & {"clip","clips","scene","scenes"}),
                                 -row[0], row[1]))
@@ -273,14 +250,18 @@ def _download_secondary(film: dict, root: Path, primary: Path, minimum_size: tup
                        'format_sort':['res','vcodec:h264'],'merge_output_format':'mp4',
                        'postprocessors':[{'key':'FFmpegVideoRemuxer','preferedformat':'mp4'}],
                        'outtmpl':str(attempt.with_suffix('.%(ext)s')),'overwrites':True,'max_filesize':MAX_TRAILER_BYTES}
+            require_disk(root)
+            stats.download_attempts += 1
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([url])
             if not attempt.exists() or not 20 <= duration(attempt) <= 360 or attempt.stat().st_size > MAX_TRAILER_BYTES:
+                stats.reject("download_file")
                 continue
             metadata = probe(attempt)
             video = next((stream for stream in metadata.get('streams',[]) if stream.get('codec_type') == 'video'),{})
             width,height = video.get('width',0),video.get('height',0)
             if width < minimum_size[0] or height < minimum_size[1]:
+                stats.reject("download_quality")
                 continue
             if existing:
                 # The third trailer must add scenes beyond the union of both
@@ -290,6 +271,7 @@ def _download_secondary(film: dict, root: Path, primary: Path, minimum_size: tup
             else:
                 novelty = scene_novelty(primary,attempt)
             if not novelty or not novelty['distinct']:
+                stats.reject("duplicate_imagery")
                 continue
             save_json(attempt.with_suffix('.json'), {'source':url,'primary_source':source,'title':info.get('title'),
                       'channel':info.get('channel'),'curated':curated,'fan_edit':bool(FAN.search(info.get('title',''))),
@@ -297,15 +279,18 @@ def _download_secondary(film: dict, root: Path, primary: Path, minimum_size: tup
             attempt.replace(target)
             attempt.with_suffix('.json').replace(target.with_suffix('.json'))
             retained=True
+            print(f"Extra footage discovery: {stats.summary()}.", flush=True)
             print(f"Added trailer {slot} for {film['title']} with different sampled imagery.",flush=True)
             return target
         except (yt_dlp.utils.DownloadError,PipelineError,OSError,ValueError) as exc:
+            stats.error(exc)
             if _bot_check(exc):
                 break
         finally:
             if not retained:
                 release_source(root,url,target)
             _clean_candidate(attempt)
+    print(f"Extra footage discovery: {stats.summary()}.", flush=True)
     if blocked or ranked:
         print(f"No distinct trailer {slot} accepted for {film['title']}; keeping the accepted trailers.",flush=True)
     return None

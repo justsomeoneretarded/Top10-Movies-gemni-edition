@@ -21,7 +21,8 @@ def test_story_material_is_distinct_from_metadata():
              "tagline": "A significant event.", "tmdb_rating": 8.1, "tmdb_votes": 20,
              "wiki_reception": "Remarkable chemistry.", "cast": ["An Actor as Sam"]}
     material = narration_material(facts)
-    assert material == {"title": "Example", "overview": facts["overview"], "cast": facts["cast"]}
+    assert material == {"title": "Example", "overview": facts["overview"]}
+    assert facts["cast"] == ["An Actor as Sam"]
     assert facts["tagline"] == "A significant event."
 
 

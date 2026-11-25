@@ -6,7 +6,7 @@ import pytest
 import requests
 
 from movie_pipeline.script import Writer
-from movie_pipeline.story_depth import REVIEW_SCHEMA
+from movie_pipeline.story_depth import REVIEW_SCHEMA, _quote_supported, _source_material
 
 FILMS = [
     {"title": "Night Crossing", "year": 2025, "kind": "movie",
@@ -340,3 +340,78 @@ def test_optional_cache_write_failure_does_not_undo_a_supported_repair(tmp_path,
     assert receipt["status"] == "completed"
     assert receipt["changed_film_indices"] == [0]
     assert receipt["cache"] == "write_unavailable"
+
+
+def test_depth_source_material_keeps_story_notes_without_credit_metadata():
+    film = {**FILMS[0], "directors": ["Jane Director"], "creators": ["Alex Creator"],
+            "cast_profiles": [{"name": "Terry Actor", "character": "Ada"}],
+            "wiki_production": "The director built the border set.",
+            "research_notes": [
+                "Created by Jane Director.",
+                "The border guards are searching for the evidence she carries."],
+            "grounded_notes": {"plot": "Her brother is trapped on the other side.",
+                               "cast": ["Terry Actor as Ada"]}}
+    material = _source_material(film)
+    assert material["research_notes"] == ["The border guards are searching for the evidence she carries."]
+    assert material["grounded_notes"] == {"plot": "Her brother is trapped on the other side."}
+    assert not {"directors", "creators", "cast", "characters", "wiki_production", "available_scenes"} & material.keys()
+    assert "Jane Director" not in repr(material) and "Terry Actor" not in repr(material)
+
+
+@pytest.mark.parametrize("quote,material", [
+    ("Directed by Jane Director", {"overview": "Directed by Jane Director."}),
+    ("created by david fincher", {"research_notes": "created by david fincher."}),
+    ("Terry Actor as Ada", {"cast": ["Terry Actor as Ada"]}),
+    ("Jane Director built the hospital set", {"wiki_production": "Jane Director built the hospital set."}),
+    ("Night Crossing the movie", {"title": "Night Crossing the movie"}),
+    ("The series stars Terry Actor as a doctor fighting to save her brother",
+     {"wiki_summary": "The series stars Terry Actor as a doctor fighting to save her brother."}),
+])
+def test_depth_expansion_quotes_cannot_be_credits_or_identity(quote, material):
+    assert not _quote_supported(quote, material)
+
+
+def test_depth_expansion_quotes_retain_plot_inside_mixed_sources_and_fictional_jobs():
+    material = {"wiki_summary": "Example is a 2025 film directed by Jane Director. "
+                               "A director searches the abandoned set for her daughter.",
+                "research_notes": "Created by Umbrella, the virus spreads through the city.",
+                "grounded_notes": "The series stars Terry Actor as a doctor fighting to save her brother."}
+    assert _quote_supported("A director searches the abandoned set for her daughter", material)
+    assert _quote_supported("Created by Umbrella, the virus spreads through the city", material)
+    assert _quote_supported("a doctor fighting to save her brother", material)
+    assert not _quote_supported("directed by Jane Director", material)
+
+
+def test_depth_editor_assesses_plot_instead_of_awarding_substance_to_credits():
+    original = draft()
+    original["sections"][2]["paragraphs"] = [
+        "Number 1: Night Crossing.", "Created by Jane Director.",
+        "A courier crosses a border to rescue her brother."]
+    writer = writer_with(assessment("adequate", details=[]))
+    result = repair(writer, original)
+    prompt = writer.ask.call_args.args[0]
+    assert "Jane Director" not in prompt
+    assert "does not count as story substance" in prompt
+    assert "a broad genre or vague problem is still thin" in prompt
+    assert "quote up to two exact unused details" in prompt
+    assert result["sections"] == original["sections"]
+
+
+def test_credit_only_unused_quote_does_not_trigger_an_expansion_request():
+    films = deepcopy(FILMS)
+    films[0]["research_notes"] = "Created by Jane Director."
+    writer = writer_with(assessment("thin", ["Created by Jane Director"]))
+    result = writer.repair_depth("Two movies", "", films, draft(), target_seconds=480)
+    assert writer.ask.call_count == 1
+    assert result["sections"] == draft()["sections"]
+    record = next(row for row in result["package"]["depth_review"]["reviews"] if row["film"] == 0)
+    assert record["action"] == "retained_no_supported_expansion"
+
+
+def test_credit_only_depth_repair_cannot_erase_existing_story():
+    writer = writer_with(assessment(), improvement([
+        "Number 1: Night Crossing.", "Directed by Jane Director."]))
+    result = repair(writer)
+    assert result["sections"] == draft()["sections"]
+    record = next(row for row in result["package"]["depth_review"]["reviews"] if row["film"] == 0)
+    assert record["action"] == "retained_invalid_repair"
