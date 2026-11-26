@@ -185,3 +185,18 @@ def test_official_scene_clips_are_accepted_without_the_word_trailer():
     novel = [0xEEEEEEEEEEEEEEEE, 0xCCCCCCCCCCCCCCCC, 0xAAAAAAAAAAAAAAAA]
     assert novelty_from_hashes(primary, novel)["distinct"] is True
     assert novelty_from_hashes(primary, [primary[0], *novel[:2]])["distinct"] is False
+
+
+def test_shortened_primary_url_does_not_spend_secondary_metadata_budget(monkeypatch, tmp_path):
+    from movie_pipeline import secondary_footage
+
+    primary, downloaded, inspected = fake_downloads(monkeypatch, tmp_path)
+    save_json(primary.with_suffix(".json"), {"source": f"https://youtu.be/{IDS[0]}"})
+    monkeypatch.setattr(secondary_footage, "MAX_METADATA", 1)
+
+    result = download_secondary(FILM, tmp_path, primary, (1920, 1080))
+
+    assert result is not None
+    assert downloaded == [IDS[1]]
+    assert inspected == [IDS[1]]
+    assert primary.read_text() == "primary"

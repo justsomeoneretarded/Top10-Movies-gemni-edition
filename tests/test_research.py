@@ -147,7 +147,7 @@ def coherence_research(release_year=None):
         if endpoint == "search/tv":
             return {"results": []}
         if endpoint == "movie/77/release_dates":
-            return {"results": [{"release_dates": [{"release_date": f"{release_year}-09-19T00:00:00Z"}]}]} if release_year else {"results": []}
+            return {"id": 77, "results": [{"release_dates": [{"release_date": f"{release_year}-09-19T00:00:00Z"}]}]} if release_year else {"id": 77, "results": []}
         if endpoint == "find/tt2866360":
             return {"movie_results": [row]}
         return {**row, "overview": "Friends gather for dinner during an unusual astronomical event.", "videos": {"results": [{"site": "YouTube", "type": "Trailer"}]}, "credits": {}}

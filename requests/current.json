@@ -1,12 +1,14 @@
 {
-  "title": "5 New Shows Worth Watching (2025–2026)",
-  "description": "Create a genuinely useful MOVIE RANKS countdown for someone who wants a great new show and is tired of scrolling. These are five series that debuted in 2025 or 2026, with very different stories; do not label the whole list as one genre or pretend they are all action shows. Open with one intriguing, understandable moment and a brief useful introduction, then get into the recommendations. Tell each premise in concrete, ordinary spoken English: who we follow, what goes wrong and why that situation is worth watching. No jargon, essay language, vague praise, ratings, tagline quotations, empty suspense or forced slang. Give each review a distinct shape and stop when it has said something useful. Do not read streaming providers aloud. Rank order is deliberate: The Pitt is number one, followed by The Studio, Dept. Q, Alien: Earth and Widow's Bay. For The Pitt, build around the pressure of a Pittsburgh emergency-department shift and believable human stakes. For The Studio, use a genuine awkward comic situation with enough setup and payoff, not random frantic shots. For Dept. Q, favor a tense cold-case discovery or a character confrontation that makes sense without giving away the answer. For Alien: Earth, use a clear moment of danger or suspense from the actual series, avoiding trailer logos and unrelated franchise footage. For Widow's Bay, show the uneasy mix of island mystery and humor, without flattening it into generic jump scares. Let each announced rank and title lead into a worthwhile native-audio scene before the review resumes; use other coherent viewing breaks when they add value, without imposing a quota. Match shots loosely to the subject and preserve understandable beginnings, dialogue and payoffs. Keep editing steady and avoid repeated footage, flicker and unrelated rapid jumps. Ease sound and visual energy across transitions, letting music recede for useful scene dialogue and effects. Use a restrained, neutral musical identity for this mixed list. Thumbnail designs should use expressive, recognizable people and verified settings from these specific shows, with cinematic contrast, strong focal hierarchy and readable faces on a phone. Prefer intriguing authentic moments over fabricated explosions or unrelated streaming logos. Keep spoken humor natural and the like/subscribe moment brief and between reviews.",
-  "movies": "The Pitt (2025); The Studio (2025); Dept. Q (2025); Alien: Earth (2025); Widow's Bay (2026)",
-  "content_type": "Shows",
+  "title": "Top 5 Mind-Bending Sci-Fi Movies You Need to Watch",
+  "description": "Create a cinematic, suspenseful countdown of five mind-bending science fiction movies. Start with a hook about stories that challenge our understanding of reality, time, and identity. Count down from #5 to #1 using the supplied ranking. Explain each film’s premise and distinctive appeal without revealing twists or endings. Favor mysterious environments, dramatic close-ups, and striking science fiction imagery. Briefly pause narration during each entry for compelling trailer dialogue, then resume smoothly. Use restrained music beneath clear narration. Aim for 8–10 minutes. Create three readable thumbnail options centered on mystery and distorted reality, with short phrases such as “QUESTION REALITY” or “EXPECT THE UNEXPECTED.” Present the ranking as our editorial selection; do not invent ratings, awards, or streaming availability.",
+  "movies": "Inception (2010); Arrival (2016); The Prestige (2006); Predestination (2014); Coherence (2013)",
+  "content_type": "Movies",
   "narrator": "Warguy",
   "tts_model": "original",
+  "narration_speed": "1.1",
   "duration_minutes": "Auto",
   "try_4k": true,
-  "validation_id": "free-quality-b7fb5987f8efc745dd5744fea211c645a46d5e8d",
-  "baseline_run": 44353630318
+  "source_repository": "justsomeoneretarded/Top10-Movies-2.0-ish",
+  "source_run_id": "44483580735",
+  "request_id": "scifi-comparison-44483580735-20261127"
 }

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from .core import FilmInput, normalized
 from .gemini import GeminiUnavailable, get_client, record_event
 from .public_research import collect_public_sources, title_key
+from .release_identity import RELEASE_IDENTITY_VERSION, public_release_evidence
 
 _NAME = {"type": "object", "properties": {"name": {"type": "string"}, "evidence": {"type": "string"}},
          "required": ["name", "evidence"], "additionalProperties": False}
@@ -369,6 +370,10 @@ def _public_film(item: FilmInput, kind: str) -> dict:
         [normalized(item.title), item.year, kind], ensure_ascii=False).encode()).hexdigest()[:20]
     names = {role: _names(data.get(role), evidence, role) for role in ("cast", "directors", "creators", "genres")}
     quotations = list(dict.fromkeys([identity, year_quote, overview, *notes]))
+    release_evidence = public_release_evidence(source, kind)
+    for row in release_evidence:
+        if row["quote"] not in quotations:
+            quotations.append(row["quote"])
     for role in names:
         for row in data.get(role, []) if isinstance(data.get(role), list) else []:
             if isinstance(row, dict) and row.get("name") in names[role]:
@@ -380,6 +385,9 @@ def _public_film(item: FilmInput, kind: str) -> dict:
             "trailers": [], "clips": [], "backdrops": [], "posters": [],
             "release_date": None, "status": None, "imdb_id": None, "networks": [],
             "source": url, "identity_source": url, "year_evidence": year_quote,
+            "release_identity_version": RELEASE_IDENTITY_VERSION,
+            "requested_title": item.title, "input_year": item.year,
+            "release_year_evidence": release_evidence,
             "research_backend": "gemini", "research_method": "public_source_context",
             "identity_aliases": source.get("aliases", []),
             "research_sources": [{"url": url, "title": source["title"],

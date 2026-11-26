@@ -60,5 +60,6 @@ jobs:
       content_type: ${{ fromJSON(needs.request.outputs.content_type) }}
       narrator: ${{ fromJSON(needs.request.outputs.narrator) }}
       tts_model: ${{ fromJSON(needs.request.outputs.tts_model) }}
+      narration_speed: '1.1'
       duration_minutes: ${{ fromJSON(needs.request.outputs.duration_minutes) }}
       try_4k: ${{ fromJSON(needs.request.outputs.try_4k) }}

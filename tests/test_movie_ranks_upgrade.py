@@ -188,7 +188,7 @@ def test_verified_keyword_context_broadens_queries_beyond_genre_templates():
     film={"title":"Example","year":2026,"kind":"movie","genres":["Drama"],
           "keywords":[{"name":"desert island"},{"name":"based on novel"}]}
     queries=search_queries(film)
-    assert "Example 2026 desert island scene" in queries
+    assert "Example desert island scene" in queries  # year-free context remains searchable
     assert "Example 2026 official trailer" in queries
     assert "Example 2026 trailer" in queries
     assert all("based on novel" not in q for q in queries)
