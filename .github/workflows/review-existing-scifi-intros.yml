@@ -1,0 +1,36 @@
+name: Review existing sci-fi introductions
+on:
+  push:
+    branches: [diagnostics/scifi-intros-45905532843]
+    paths: [.github/workflows/review-existing-scifi-intros.yml, scripts/review_existing_scifi_intros.py]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install inspection tools only
+        run: |
+          python -m pip install 'Pillow>=11,<12'
+          if ! command -v ffmpeg >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y ffmpeg; fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: movie-video-5
+          run-id: '45905532843'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: payload
+      - name: Inspect existing output without generation or model calls
+        run: python -m scripts.review_existing_scifi_intros
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scifi-intro-review-excerpts
+          path: review-output
+          retention-days: 1
+          if-no-files-found: ignore
