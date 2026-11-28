@@ -1,0 +1,36 @@
+name: Inspect saved heist output
+on:
+  push:
+    branches: [diagnostics/heist-output-comparison-20261128]
+    paths: [.github/workflows/inspect-heist-output.yml, scripts/inspect_heist_output.py]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install inspection tools only
+        run: |
+          python -m pip install 'Pillow>=11,<12'
+          if ! command -v ffmpeg >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y ffmpeg; fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: movie-video-6
+          run-id: '45906538695'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: payload
+      - name: Inspect existing output only
+        run: python -m scripts.inspect_heist_output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: heist-output-comparison-excerpts
+          path: comparison-output
+          retention-days: 1
+          if-no-files-found: ignore
